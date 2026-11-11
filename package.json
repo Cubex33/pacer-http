@@ -4,6 +4,15 @@
   "description": "Adaptive client-side rate limiter: wraps any fetch and paces requests from RateLimit / X-RateLimit-* / Retry-After response headers.",
   "type": "module",
   "license": "MIT",
+  "author": "Cubex33",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cubex33/pacer-http.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Cubex33/pacer-http/issues"
+  },
+  "homepage": "https://github.com/Cubex33/pacer-http#readme",
   "keywords": [
     "rate-limit",
     "ratelimit",
