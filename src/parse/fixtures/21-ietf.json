@@ -1,0 +1,21 @@
+{
+  "name": "IETF draft-11 / exhausted, no t parameter → reset unknown",
+  "category": "ietf",
+  "target": "headers",
+  "headers": {
+    "ratelimit": "\"server\";r=0",
+    "ratelimit-policy": "\"server\";q=10;w=1"
+  },
+  "expected": {
+    "limit": 10,
+    "remaining": 0,
+    "reset": null,
+    "windows": [
+      {
+        "limit": 10,
+        "windowSec": 1
+      }
+    ]
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

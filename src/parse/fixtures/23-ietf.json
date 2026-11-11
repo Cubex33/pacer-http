@@ -1,0 +1,15 @@
+{
+  "name": "IETF draft-07 / combined text form",
+  "category": "ietf",
+  "target": "headers",
+  "headers": {
+    "ratelimit": "limit=10, remaining=2, reset=10"
+  },
+  "expected": {
+    "limit": 10,
+    "remaining": 2,
+    "reset": "2026-11-11T12:00:10.000Z",
+    "windows": []
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

@@ -1,0 +1,17 @@
+{
+  "name": "GitLab / delta-seconds reset",
+  "category": "gitlab",
+  "target": "headers",
+  "headers": {
+    "ratelimit-limit": "600",
+    "ratelimit-remaining": "599",
+    "ratelimit-reset": "60"
+  },
+  "expected": {
+    "limit": 600,
+    "remaining": 599,
+    "reset": "2026-11-11T12:01:00.000Z",
+    "windows": []
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

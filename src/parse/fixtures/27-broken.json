@@ -1,0 +1,12 @@
+{
+  "name": "Broken / negative reset",
+  "category": "broken",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-remaining": "59",
+    "x-ratelimit-reset": "-5"
+  },
+  "expected": null,
+  "now": "2026-11-11T12:00:00.000Z"
+}

@@ -1,0 +1,24 @@
+{
+  "name": "IETF older draft / integer policy items, no RateLimit header",
+  "category": "ietf",
+  "target": "headers",
+  "headers": {
+    "ratelimit-policy": "10;w=1, 100;w=60"
+  },
+  "expected": {
+    "limit": -1,
+    "remaining": -1,
+    "reset": null,
+    "windows": [
+      {
+        "limit": 10,
+        "windowSec": 1
+      },
+      {
+        "limit": 100,
+        "windowSec": 60
+      }
+    ]
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

@@ -1,0 +1,17 @@
+{
+  "name": "Square / daily bucket",
+  "category": "square",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit": "100000",
+    "x-ratelimit-remaining": "99998",
+    "x-ratelimit-reset": "1794402000"
+  },
+  "expected": {
+    "limit": 100000,
+    "remaining": 99998,
+    "reset": "2026-11-11T13:00:00.000Z",
+    "windows": []
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

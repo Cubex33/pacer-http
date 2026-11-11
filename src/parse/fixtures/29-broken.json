@@ -1,0 +1,8 @@
+{
+  "name": "Broken / no rate-limit headers at all",
+  "category": "broken",
+  "target": "headers",
+  "headers": {},
+  "expected": null,
+  "now": "2026-11-11T12:00:00.000Z"
+}

@@ -1,0 +1,21 @@
+{
+  "name": "OpenAI / requests and tokens both present — requests wins",
+  "category": "openai",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit-requests": "500",
+    "x-ratelimit-remaining-requests": "499",
+    "x-ratelimit-reset-requests": "6s",
+    "x-ratelimit-limit-tokens": "200000",
+    "x-ratelimit-remaining-tokens": "199940",
+    "x-ratelimit-reset-tokens": "5s"
+  },
+  "expected": {
+    "limit": 500,
+    "remaining": 499,
+    "reset": "2026-11-11T12:00:06.000Z",
+    "windows": [],
+    "unit": "requests"
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

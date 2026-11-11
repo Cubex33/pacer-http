@@ -1,0 +1,8 @@
+{
+  "name": "Retry-After / ISO 8601 date",
+  "value": "2026-11-11T12:00:45Z",
+  "expectedMs": 45000,
+  "category": "retry-after",
+  "now": "2026-11-11T12:00:00.000Z",
+  "target": "retry-after"
+}

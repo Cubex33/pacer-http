@@ -1,0 +1,17 @@
+{
+  "name": "Discord / reset-after only",
+  "category": "discord",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit": "5",
+    "x-ratelimit-remaining": "4",
+    "x-ratelimit-reset-after": "1.234"
+  },
+  "expected": {
+    "limit": 5,
+    "remaining": 4,
+    "reset": "2026-11-11T12:00:01.234Z",
+    "windows": []
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

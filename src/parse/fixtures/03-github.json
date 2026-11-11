@@ -1,0 +1,17 @@
+{
+  "name": "GitHub / exhausted bucket",
+  "category": "github",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-reset": "1794398445"
+  },
+  "expected": {
+    "limit": 60,
+    "remaining": 0,
+    "reset": "2026-11-11T12:00:45.000Z",
+    "windows": []
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

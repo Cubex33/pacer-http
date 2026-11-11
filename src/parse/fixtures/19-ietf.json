@@ -1,0 +1,21 @@
+{
+  "name": "IETF draft-11 / single window",
+  "category": "ietf",
+  "target": "headers",
+  "headers": {
+    "ratelimit": "\"example\";r=2;t=1",
+    "ratelimit-policy": "\"example\";q=10;w=1"
+  },
+  "expected": {
+    "limit": 10,
+    "remaining": 2,
+    "reset": "2026-11-11T12:00:01.000Z",
+    "windows": [
+      {
+        "limit": 10,
+        "windowSec": 1
+      }
+    ]
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

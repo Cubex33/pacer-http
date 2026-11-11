@@ -1,0 +1,19 @@
+{
+  "name": "Discord / bucket exhausted, global flag ignored",
+  "category": "discord",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit": "5",
+    "x-ratelimit-remaining": "0",
+    "x-ratelimit-reset": "1470173023.5",
+    "x-ratelimit-reset-after": "2.5",
+    "x-ratelimit-global": "true"
+  },
+  "expected": {
+    "limit": 5,
+    "remaining": 0,
+    "reset": "2026-11-11T12:00:02.500Z",
+    "windows": []
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

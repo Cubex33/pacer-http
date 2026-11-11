@@ -1,0 +1,22 @@
+{
+  "name": "IETF draft-11 / qu parameter carries the quota unit",
+  "category": "ietf",
+  "target": "headers",
+  "headers": {
+    "ratelimit": "\"app\";r=1024;t=600",
+    "ratelimit-policy": "\"app\";q=10000;w=3600;qu=\"content-bytes\""
+  },
+  "expected": {
+    "limit": 10000,
+    "remaining": 1024,
+    "reset": "2026-11-11T12:10:00.000Z",
+    "windows": [
+      {
+        "limit": 10000,
+        "windowSec": 3600
+      }
+    ],
+    "unit": "content-bytes"
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

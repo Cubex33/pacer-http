@@ -1,0 +1,18 @@
+{
+  "name": "GitHub / happy path with x-ratelimit-used ignored",
+  "category": "github",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-remaining": "59",
+    "x-ratelimit-reset": "1794398460",
+    "x-ratelimit-used": "1"
+  },
+  "expected": {
+    "limit": 60,
+    "remaining": 59,
+    "reset": "2026-11-11T12:01:00.000Z",
+    "windows": []
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

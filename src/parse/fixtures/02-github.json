@@ -1,0 +1,17 @@
+{
+  "name": "GitHub / last slot remaining",
+  "category": "github",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-remaining": "1",
+    "x-ratelimit-reset": "1794398430"
+  },
+  "expected": {
+    "limit": 60,
+    "remaining": 1,
+    "reset": "2026-11-11T12:00:30.000Z",
+    "windows": []
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

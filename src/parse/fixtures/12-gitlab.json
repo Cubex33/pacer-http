@@ -1,0 +1,17 @@
+{
+  "name": "GitLab / exhausted bucket",
+  "category": "gitlab",
+  "target": "headers",
+  "headers": {
+    "ratelimit-limit": "600",
+    "ratelimit-remaining": "0",
+    "ratelimit-reset": "45"
+  },
+  "expected": {
+    "limit": 600,
+    "remaining": 0,
+    "reset": "2026-11-11T12:00:45.000Z",
+    "windows": []
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

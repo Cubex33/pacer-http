@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "outDir": "dist/cjs",
+    "rootDir": "src",
+    "sourceMap": false,
+    "module": "CommonJS",
+    "moduleResolution": "Node10",
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["test", "scripts", "examples"]
+}

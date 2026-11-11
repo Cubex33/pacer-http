@@ -1,0 +1,11 @@
+{
+  "name": "Broken / GitLab negative remaining",
+  "category": "broken",
+  "target": "headers",
+  "headers": {
+    "ratelimit-limit": "600",
+    "ratelimit-remaining": "-1"
+  },
+  "expected": null,
+  "now": "2026-11-11T12:00:00.000Z"
+}

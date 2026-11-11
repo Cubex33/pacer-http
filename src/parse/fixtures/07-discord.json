@@ -1,0 +1,18 @@
+{
+  "name": "Discord / reset-after preferred over fractional epoch",
+  "category": "discord",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit": "5",
+    "x-ratelimit-remaining": "1",
+    "x-ratelimit-reset": "1470173023.123",
+    "x-ratelimit-reset-after": "0.620"
+  },
+  "expected": {
+    "limit": 5,
+    "remaining": 1,
+    "reset": "2026-11-11T12:00:00.620Z",
+    "windows": []
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

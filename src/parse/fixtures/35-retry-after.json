@@ -1,0 +1,8 @@
+{
+  "name": "Retry-After / zero",
+  "value": "0",
+  "expectedMs": 0,
+  "category": "retry-after",
+  "now": "2026-11-11T12:00:00.000Z",
+  "target": "retry-after"
+}

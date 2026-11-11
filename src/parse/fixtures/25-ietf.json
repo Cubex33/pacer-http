@@ -1,0 +1,18 @@
+{
+  "name": "IETF / malformed RateLimit field falls back to legacy family",
+  "category": "ietf",
+  "target": "headers",
+  "headers": {
+    "ratelimit": "\"a\";r=x",
+    "x-ratelimit-limit": "60",
+    "x-ratelimit-remaining": "59",
+    "x-ratelimit-reset": "1794398460"
+  },
+  "expected": {
+    "limit": 60,
+    "remaining": 59,
+    "reset": "2026-11-11T12:01:00.000Z",
+    "windows": []
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

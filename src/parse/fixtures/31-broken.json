@@ -1,0 +1,12 @@
+{
+  "name": "Broken / Anthropic unparseable reset date",
+  "category": "broken",
+  "target": "headers",
+  "headers": {
+    "anthropic-ratelimit-requests-limit": "100",
+    "anthropic-ratelimit-requests-remaining": "99",
+    "anthropic-ratelimit-requests-reset": "not-a-date"
+  },
+  "expected": null,
+  "now": "2026-11-11T12:00:00.000Z"
+}

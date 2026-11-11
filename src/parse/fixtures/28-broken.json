@@ -1,0 +1,11 @@
+{
+  "name": "Broken / remaining above limit",
+  "category": "broken",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit": "5",
+    "x-ratelimit-remaining": "10"
+  },
+  "expected": null,
+  "now": "2026-11-11T12:00:00.000Z"
+}
