@@ -1,5 +1,5 @@
 import { createAbortError, type Clock } from "./clock.js";
-import type { PacerJitter, PacerOptions, RateLimitState } from "../types.js";
+import type { PacerJitter, PacerOptions, RateLimitState, RetryInfo } from "../types.js";
 
 /** Fully-resolved pacer configuration (defaults applied). */
 export interface ResolvedPacerOptions {
@@ -12,6 +12,7 @@ export interface ResolvedPacerOptions {
   readonly maxWaitMs: number;
   readonly shouldPause: (s: RateLimitState) => boolean;
   readonly onStateChange: ((key: string, s: RateLimitState | null) => void) | null;
+  readonly onRetry: ((info: RetryInfo) => void) | null;
 }
 
 const DEFAULT_RETRY_ON: readonly number[] = [429];
@@ -39,6 +40,7 @@ export function resolvePacerOptions(opts: PacerOptions = {}): ResolvedPacerOptio
     maxWaitMs: opts.maxWaitMs ?? DEFAULT_MAX_WAIT_MS,
     shouldPause: opts.shouldPause ?? ((s) => s.remaining <= 1),
     onStateChange: opts.onStateChange ?? null,
+    onRetry: opts.onRetry ?? null,
   };
 }
 

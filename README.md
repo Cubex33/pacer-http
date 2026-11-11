@@ -1,5 +1,9 @@
 # pacer-http
 
+[![CI](https://github.com/Cubex33/pacer-http/actions/workflows/ci.yml/badge.svg)](https://github.com/Cubex33/pacer-http/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/Cubex33/pacer-http/blob/main/LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
+
 **Adaptive client-side rate limiting for `fetch`: read `RateLimit` / `X-RateLimit-*` / `Retry-After` headers, pause until reset, retry 429s — no guessed numbers, no hand-rolled backoff code.**
 
 ```bash
@@ -65,6 +69,11 @@ const fetch = pacer(globalThis.fetch, {
     if (state)
       console.log(key, `${state.remaining}/${state.limit} until ${state.reset?.toISOString()}`);
   },
+  onRetry: ({ key, status, attempt, delayMs, retryAfterMs }) =>
+    console.log(
+      `${key}: got ${status}, retry #${attempt} in ${delayMs}ms` +
+        ` (server asked for ${retryAfterMs ?? "no Retry-After"})`,
+    ),
 });
 
 for (const id of ids) {
@@ -107,18 +116,19 @@ for (const id of ids) {
 
 All optional. `pacer(fetchFn, opts)` / `new Pacer(opts)`.
 
-| Option          | Type                                  | Default                 | Description                                                                                                                                                                                |
-| --------------- | ------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `initial`       | `{ limit: number; windowMs: number }` | —                       | Static fallback while the server reports no rate-limit headers: requests are paced `windowMs / limit` apart. Dropped as soon as usable headers arrive.                                     |
-| `maxConcurrent` | `number`                              | `Infinity`              | Max requests in flight, counted per key.                                                                                                                                                   |
-| `retryOn`       | `number[]`                            | `[429]`                 | Statuses that trigger a retry. Add `403` for APIs that signal rate limits that way.                                                                                                        |
-| `maxRetries`    | `number`                              | `3`                     | Retries per request after the first attempt. `0` → first retryable response throws `PacerExhaustedError` with `attempts: 1`.                                                               |
-| `jitter`        | `"full" \| "none"`                    | `"full"`                | `"full"` adds `0..min(1s, wait·10%)` on top of every pause/retry wait so synchronized clients don't stampede at reset. Interval pacing is never jittered.                                  |
-| `key`           | `(url, init) => string`               | URL origin              | Bucketing function.                                                                                                                                                                        |
-| `maxWaitMs`     | `number`                              | `900000`                | Cap for a single pause. A pause truncated by this cap happens at most once per reset point — after it, the request proceeds (liveness over strictness).                                    |
-| `shouldPause`   | `(state) => boolean`                  | `s => s.remaining <= 1` | Proactive pause decision. Receives the state with `remaining` adjusted for requests already dispatched in this window (`Infinity` when unknown). The default never consumes the last slot. |
-| `onStateChange` | `(key, state \| null) => void`        | —                       | Metrics hook; fires on every observed response. `null` = no/garbage headers.                                                                                                               |
-| `clock`         | `Clock`                               | `SystemClock`           | Time source injection for deterministic tests (`now()` + `sleep()`).                                                                                                                       |
+| Option          | Type                                  | Default                 | Description                                                                                                                                                                                                                                                                                                                                   |
+| --------------- | ------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `initial`       | `{ limit: number; windowMs: number }` | —                       | Static fallback while the server reports no rate-limit headers: requests are paced `windowMs / limit` apart. Dropped as soon as usable headers arrive.                                                                                                                                                                                        |
+| `maxConcurrent` | `number`                              | `Infinity`              | Max requests in flight, counted per key.                                                                                                                                                                                                                                                                                                      |
+| `retryOn`       | `number[]`                            | `[429]`                 | Statuses that trigger a retry. Add `403` for APIs that signal rate limits that way.                                                                                                                                                                                                                                                           |
+| `maxRetries`    | `number`                              | `3`                     | Retries per request after the first attempt. `0` → first retryable response throws `PacerExhaustedError` with `attempts: 1`.                                                                                                                                                                                                                  |
+| `jitter`        | `"full" \| "none"`                    | `"full"`                | `"full"` adds `0..min(1s, wait·10%)` on top of every pause/retry wait so synchronized clients don't stampede at reset. Interval pacing is never jittered.                                                                                                                                                                                     |
+| `key`           | `(url, init) => string`               | URL origin              | Bucketing function.                                                                                                                                                                                                                                                                                                                           |
+| `maxWaitMs`     | `number`                              | `900000`                | Cap for a single pause. A pause truncated by this cap happens at most once per reset point — after it, the request proceeds (liveness over strictness).                                                                                                                                                                                       |
+| `shouldPause`   | `(state) => boolean`                  | `s => s.remaining <= 1` | Proactive pause decision. Receives the state with `remaining` adjusted for requests already dispatched in this window (`Infinity` when unknown). The default never consumes the last slot.                                                                                                                                                    |
+| `onStateChange` | `(key, state \| null) => void`        | —                       | Metrics hook; fires on every observed response. `null` = no/garbage headers.                                                                                                                                                                                                                                                                  |
+| `onRetry`       | `(info: RetryInfo) => void`           | —                       | Observability hook; fires exactly once right before every retry with `{ key, status, attempt, delayMs, retryAfterMs }` — `attempt` counts the upcoming attempt (first retry = 2), `delayMs` includes jitter, `retryAfterMs` is the parsed `Retry-After` in ms or `null`. Callback exceptions propagate to the caller, like `onStateChange`'s. |
+| `clock`         | `Clock`                               | `SystemClock`           | Time source injection for deterministic tests (`now()` + `sleep()`).                                                                                                                                                                                                                                                                          |
 
 ### `Pacer` (for non-fetch clients)
 

@@ -3,6 +3,20 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1] — 2026-11-11
+
+### Added
+
+- `onRetry` observability callback (`pacer()` / `new Pacer()`): fired exactly
+  once right before every retry with a `RetryInfo` payload —
+  `{ key, status, attempt, delayMs, retryAfterMs }` (`attempt` counts the
+  upcoming attempt, first retry = 2; `delayMs` includes jitter;
+  `retryAfterMs` is the parsed `Retry-After` in ms or `null`). The
+  `RetryInfo` type is exported. Callback exceptions propagate to the
+  caller, matching `onStateChange` semantics.
+- README: CI / MIT / Node ≥ 20 badges in the header; `onRetry` documented
+  in the Options table and Example 2.
+
 ## [0.1.0] — 2026-11-11
 
 Initial MVP.

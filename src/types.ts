@@ -34,6 +34,28 @@ export interface RateLimitState {
 /** Jitter mode for waits (see README › Options › jitter). */
 export type PacerJitter = "none" | "full";
 
+/**
+ * Payload for the {@link PacerOptions.onRetry} observability hook, fired
+ * once right before every retry.
+ */
+export interface RetryInfo {
+  /** Bucket key the retried request runs under. */
+  key: string;
+  /** Status code of the response being retried (e.g. `429`). */
+  status: number;
+  /** Number of the attempt that will run next (the first retry is `2`). */
+  attempt: number;
+  /** Actual wait before that attempt, in milliseconds, including jitter. */
+  delayMs: number;
+  /**
+   * Parsed `Retry-After` in milliseconds as the server sent it, or `null`
+   * when the response carried no (parseable) `Retry-After`. `0` means the
+   * server asked for an immediate retry; the wait falls back to backoff
+   * in that case, but the value is still reported here.
+   */
+  retryAfterMs: number | null;
+}
+
 /** Options for {@link pacer} / {@link Pacer}. All fields are optional. */
 export interface PacerOptions {
   /**
@@ -88,6 +110,15 @@ export interface PacerOptions {
    * headers (state is not updated in that case).
    */
   onStateChange?: (key: string, s: RateLimitState | null) => void;
+  /**
+   * Retry observability hook: called exactly once right before every
+   * retry (not for the initial attempt, and not when the retry budget is
+   * already spent) with the bucket key, the retryable status, the
+   * upcoming attempt number, the actual wait including jitter, and the
+   * parsed `Retry-After` (see {@link RetryInfo}). Exceptions thrown by the
+   * callback propagate to the caller, exactly like `onStateChange`'s.
+   */
+  onRetry?: (info: RetryInfo) => void;
   /**
    * Clock injection (testing / simulation). Default: system clock.
    */

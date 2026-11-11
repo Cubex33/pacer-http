@@ -12,6 +12,7 @@ import {
   type PacerOptions,
   type RateLimitState,
   type RateLimitWindow,
+  type RetryInfo,
   type ScheduleOptions,
   type SleepHandle,
 } from "../../src/index.js";
@@ -71,9 +72,20 @@ describe("public API types", () => {
       maxWaitMs?: number;
       shouldPause?: (s: RateLimitState) => boolean;
       onStateChange?: (key: string, s: RateLimitState | null) => void;
+      onRetry?: (info: RetryInfo) => void;
       clock?: Clock;
     }>();
     expectTypeOf<PacerJitter>().toEqualTypeOf<"none" | "full">();
+  });
+
+  it("RetryInfo carries the retry payload", () => {
+    expectTypeOf<RetryInfo>().toEqualTypeOf<{
+      key: string;
+      status: number;
+      attempt: number;
+      delayMs: number;
+      retryAfterMs: number | null;
+    }>();
   });
 
   it("header parsers expose their contracts", () => {

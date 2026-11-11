@@ -3,7 +3,7 @@ import { PacerExhaustedError } from "../../src/errors.js";
 import { SystemClock } from "../../src/limiter/clock.js";
 import { backoffMs, jitterMs } from "../../src/limiter/limiter.js";
 import { Pacer, pacer } from "../../src/pacer.js";
-import type { RateLimitState } from "../../src/types.js";
+import type { RateLimitState, RetryInfo } from "../../src/types.js";
 
 /* ------------------------------------------------------------------ *
  * Helpers
@@ -390,6 +390,110 @@ describe("retries", () => {
     const res = await fetch(URL_A);
     expect(res.status).toBe(500);
     expect(calls.length).toBe(1);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Retry observability
+ * ------------------------------------------------------------------ */
+
+describe("onRetry", () => {
+  it("reports the Retry-After wait exactly once per retry", async () => {
+    const infos: RetryInfo[] = [];
+    const { fn, calls } = scriptedFetch([{ status: 429, headers: { "retry-after": "5" } }, {}]);
+    const fetch = pacer(fn, {
+      jitter: "none",
+      onRetry: (info) => infos.push(info),
+    });
+    const promise = fetch(URL_A);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const res = await promise;
+    expect(res.status).toBe(200);
+    expect(calls.length).toBe(2); // exactly one retry
+    expect(infos).toHaveLength(1); // exactly one callback per retry
+    expect(infos[0]).toEqual({
+      key: "https://api.example.com", // default key = origin
+      status: 429,
+      attempt: 2, // the upcoming attempt; the first retry is 2
+      delayMs: 5_000,
+      retryAfterMs: 5_000,
+    });
+  });
+
+  it("reports exponential backoff attempts with retryAfterMs null", async () => {
+    const infos: RetryInfo[] = [];
+    const { fn, calls } = scriptedFetch([{ status: 429 }, { status: 429 }, {}]);
+    const fetch = pacer(fn, {
+      jitter: "none",
+      onRetry: (info) => infos.push(info),
+    });
+    const promise = fetch(URL_A);
+    await vi.advanceTimersByTimeAsync(3_000);
+    const res = await promise;
+    expect(res.status).toBe(200);
+    expect(calls.length).toBe(3);
+    expect(infos).toHaveLength(2);
+    expect(infos[0]).toMatchObject({
+      status: 429,
+      attempt: 2,
+      delayMs: 1_000,
+      retryAfterMs: null,
+    });
+    expect(infos[1]).toMatchObject({
+      status: 429,
+      attempt: 3,
+      delayMs: 2_000,
+      retryAfterMs: null,
+    });
+  });
+
+  it("includes jitter in delayMs while retryAfterMs stays exact", async () => {
+    const infos: RetryInfo[] = [];
+    const { fn } = scriptedFetch([{ status: 429, headers: { "retry-after": "5" } }, {}]);
+    const fetch = pacer(fn, { onRetry: (info) => infos.push(info) }); // jitter: "full"
+    const promise = fetch(URL_A);
+    await vi.advanceTimersByTimeAsync(6_000);
+    const res = await promise;
+    expect(res.status).toBe(200);
+    expect(infos).toHaveLength(1);
+    const info = infos[0]!;
+    expect(info.retryAfterMs).toBe(5_000); // the parsed header, not jittered
+    expect(info.delayMs).toBeGreaterThanOrEqual(5_000); // RA + jitter(0..500)
+    expect(info.delayMs).toBeLessThanOrEqual(5_500);
+  });
+
+  it("does not fire when no retry happens", async () => {
+    const infos: RetryInfo[] = [];
+    const ok = scriptedFetch([{}]);
+    await pacer(ok.fn, { onRetry: (info) => infos.push(info) })(URL_A);
+    expect(infos).toHaveLength(0);
+
+    const dead = scriptedFetch([{ status: 429, headers: { "retry-after": "5" } }]);
+    const deadFetch = pacer(dead.fn, {
+      maxRetries: 0,
+      onRetry: (info) => infos.push(info),
+    });
+    await expect(deadFetch(URL_A)).rejects.toBeInstanceOf(PacerExhaustedError);
+    expect(infos).toHaveLength(0);
+  });
+
+  it("propagates callback errors to the caller, like onStateChange", async () => {
+    const { fn, calls } = scriptedFetch([{ status: 429, headers: { "retry-after": "5" } }, {}]);
+    const boom = new Error("hook exploded");
+    const fetch = pacer(fn, {
+      jitter: "none",
+      onRetry: () => {
+        throw boom;
+      },
+    });
+    let caught: unknown;
+    const promise = fetch(URL_A).catch((err: unknown) => {
+      caught = err;
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await promise;
+    expect(caught).toBe(boom);
+    expect(calls.length).toBe(1); // the retry never happened
   });
 });
 

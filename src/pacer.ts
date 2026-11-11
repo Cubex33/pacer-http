@@ -98,7 +98,8 @@ export class Pacer {
    * `maxRetries` times, waiting exactly `Retry-After` (+ jitter) when the
    * server sends one, or an exponential 1s/2s/4s… backoff (+ jitter) when it
    * does not. After the budget is spent, {@link PacerExhaustedError} is
-   * thrown with the last response attached.
+   * thrown with the last response attached. Every pending retry is reported
+   * through the `onRetry` hook, when configured.
    *
    * This is what {@link pacer} uses under the hood; it is exposed for
    * fetch-like clients (undici, electron net, wrappers) that are not
@@ -123,6 +124,15 @@ export class Pacer {
       // Retry waits are abortable via the clock but are NOT interrupted by
       // new observations: the wait is the server's own instruction.
       const waitMs = baseWaitMs + jitterMs(baseWaitMs, this.opts.jitter);
+      // Observability hook (like onStateChange, exceptions propagate to
+      // the caller and abort the fetch).
+      this.opts.onRetry?.({
+        key,
+        status: res.status,
+        attempt: attempts + 1,
+        delayMs: waitMs,
+        retryAfterMs,
+      });
       if (waitMs > 0) await this.clock.sleep(waitMs, { signal }).promise;
     }
   }
