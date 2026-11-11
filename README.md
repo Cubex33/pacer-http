@@ -90,6 +90,64 @@ for (const id of ids) {
 }
 ```
 
+## Adapters (axios, got, undici)
+
+The same engine ships as thin adapters for the three popular Node clients. They reference the client **only as types** — the client itself is injected — so pacer-http keeps zero runtime dependencies; axios / got / undici are optional peer dependencies:
+
+```bash
+npm install pacer-http axios   # or got / undici — whichever you use
+```
+
+All adapters resolve the client's **native response** (`AxiosResponse`, got's `Response`, undici's `{ statusCode, headers, body }`), forward `signal` (aborting pacing waits and the request), honor `Retry-After`, and attach that native response to `PacerExhaustedError` when the retry budget runs out. Responses that are not retried are delivered exactly as the client would deliver them — including the client's own error class for non-2xx statuses (`AxiosError`, `HTTPError`). Bucket keys come from the request URL; a custom `key` receives the URL and the client's request options as `init`.
+
+### axios
+
+```ts
+import axios from "axios";
+import { wrapAxios } from "pacer-http/axios";
+
+const api = wrapAxios(axios.create({ baseURL: "https://api.github.com" }));
+
+const res = await api.get("/rate_limit"); // res is a native AxiosResponse
+console.log(res.status, res.data.rate);
+```
+
+The wrapper calls **through** your instance (`instance.request(config)`), so interceptors, `baseURL`, defaults and adapters keep working. It exposes the usual shortcuts: the callable form `api(url, config)` plus `request`, `get`, `post`, `put`, `patch`, `delete`, `head`.
+
+> **Don't stack retries.** pacer-http already retries `retryOn` statuses (429 by default). Combining it with `axios-retry` would retry the same 429 twice — disable one of them.
+
+### got
+
+```ts
+import got from "got";
+import { wrapGot } from "pacer-http/got";
+
+const paced = wrapGot(got);
+const res = await paced("https://api.github.com/rate_limit", {
+  retry: { limit: 0 }, // pacer-http owns retries
+  responseType: "json",
+});
+console.log(res.statusCode, res.body);
+```
+
+`wrapGot` accepts `got` itself or a `got.extend()` instance. The returned promise resolves got's full response — it intentionally does **not** carry got's `.json()` / `.text()` / `.buffer()` shortcuts (they re-configure the pending request and do not compose with retries): pass `responseType` and read `response.body` instead.
+
+> **Don't stack retries.** got retries 429s by default (`retry.limit: 2`); set `retry: { limit: 0 }` (as above), or keep got's retry only if you deliberately want it to handle non-rate-limit statuses.
+
+### undici
+
+```ts
+import { request } from "undici";
+import { wrapUndici } from "pacer-http/undici";
+
+const pacedRequest = wrapUndici(request);
+const { statusCode, headers, body } = await pacedRequest("https://api.github.com/rate_limit");
+console.log(statusCode, headers["x-ratelimit-remaining"]);
+console.log(await body.json());
+```
+
+Bodies of responses dropped for a retry are dumped automatically, so the connection can be reused. If you use undici's fetch-shaped API, the plain wrapper works without an adapter: `pacer(undici.fetch)`.
+
 ## When NOT to use this
 
 - **You already use a provider SDK that throttles itself.** `octokit/plugin-throttling` parses GitHub's headers, `openai-node` parses OpenAI's — adding pacer-http on top duplicates the work. Wrap the SDK's transport only if you must share one budget across processes (pacer-http is in-memory and per-instance).
@@ -145,9 +203,13 @@ const data = await p.schedule(
 
 // feed every response back so the pacer learns
 p.observe(response); // key defaults to the origin of response.url
+
+// inspect or forget the learned state
+p.getState("https://api.example.com"); // RateLimitState | undefined
+p.reset("https://api.example.com"); // or p.reset() for every key
 ```
 
-`pacer(fetchFn, opts)` is sugar over `Pacer#fetch`, which is public too (`engine.fetch(fetchLike, input, init)`) for fetch-shaped clients that aren't assignable to `typeof fetch`.
+`pacer(fetchFn, opts)` is sugar over `Pacer#fetch`, which is public too (`engine.fetch(fetchLike, input, init)`) for fetch-shaped clients that aren't assignable to `typeof fetch`. `Pacer#runWithRetry(dispatch, view, opts)` is the client-agnostic retry loop behind `fetch` and every adapter — use it to build an adapter for a client we don't ship one for.
 
 ### Semantics worth knowing
 
@@ -155,12 +217,13 @@ p.observe(response); // key defaults to the origin of response.url
 - **Resync.** Every new observation replaces the state: a grown `remaining` (new window) cancels pending pauses; a shrunken one tightens them.
 - **`Retry-After` precedence.** On a `retryOn` response with a positive `Retry-After`, the retry happens exactly `Retry-After` (+ jitter) later, and the deadline overrides the quota headers' reset point. `Retry-After: 0`, absent, or unparseable → exponential backoff from 1s (+ jitter). A 429 _with_ quota headers but _without_ `Retry-After` keeps the limiter's pause-until-reset dominant.
 - **Quota units ≠ requests** (OpenAI/Anthropic tokens, `qu="content-bytes"`): parsed and reported through `onStateChange`, never paced.
+- **Introspection and reset.** `getState(key)` returns the effective state the next decision would use — `remaining` already adjusted for requests dispatched in this window (`Infinity` while the server hasn't reported a quota), the reset point (possibly overridden by `Retry-After`) — or `undefined` for keys never seen. `reset(key?)` forgets the learned state and falls back to the static `initial` pacing; pauses already in progress are **not** interrupted — they sleep out and re-decide against the cleared state (abort one with a `signal` to cut it short), and concurrency slots of in-flight requests are preserved.
 - **Clock.** Every decision and wait goes through the injected `clock`; nothing reads `new Date()` or `setTimeout` directly.
 
 ## Error behavior
 
 - Bad headers (NaN, negative reset, `remaining > limit`, malformed structured fields) never throw: the family is ignored, the previous state stands, `onStateChange` gets `null`.
-- A retryable status that outlives `maxRetries` throws `PacerExhaustedError` with `.response` (the last response, headers included) and `.attempts` (total requests made, first one included). Network errors from the underlying fetch propagate as-is.
+- A retryable status that outlives `maxRetries` throws `PacerExhaustedError` with `.response` (the last response, headers included) and `.attempts` (total requests made, first one included). Network errors from the underlying fetch propagate as-is. Adapters behave the same way, except that non-retried responses are delivered through the client's own error class (`AxiosError`, `HTTPError`) and `PacerExhaustedError.response` is the client's native response object.
 - Abort during pacing, a concurrency queue, or a retry wait rejects with `AbortError` (`DOMException` where available).
 - A pause longer than `maxWaitMs` is truncated once; the request then proceeds rather than waiting forever.
 

@@ -8,7 +8,10 @@
     "sourceMap": false,
     "module": "CommonJS",
     "moduleResolution": "Node10",
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "got": ["./node_modules/got/dist/source/index.d.ts"]
+    }
   },
   "include": ["src/**/*.ts"],
   "exclude": ["test", "scripts", "examples"]

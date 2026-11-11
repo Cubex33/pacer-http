@@ -3,6 +3,34 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] — 2026-11-11
+
+### Added
+
+- Client adapters under `pacer-http/axios`, `pacer-http/got` and
+  `pacer-http/undici` (`wrapAxios`, `wrapGot`, `wrapUndici`): the same
+  adaptive engine and retry policy, returning each client's native response
+  (`AxiosResponse`, got's `Response`, undici's `{ statusCode, headers, body }`).
+  The clients are optional peer dependencies and are referenced only as types,
+  so pacer-http still has zero runtime dependencies. `signal` is forwarded,
+  `Retry-After` is honored, undici retry bodies are dumped, and non-retried
+  responses rethrow the client's own error class.
+- `Pacer#reset(key?)` and `Pacer#getState(key)` for introspection and manual
+  state resets; pauses already in progress are not interrupted.
+- `Pacer#runWithRetry(dispatch, view, opts)` — the client-agnostic retry loop
+  behind `fetch` and every adapter — plus the exported `ResponseView`
+  interface, so adapters for other clients can be built on the public API.
+- README "Adapters" section and `reset` / `getState` documentation.
+
+### Changed
+
+- `PacerExhaustedError` is now generic (`PacerExhaustedError<R = Response>`)
+  so adapters can attach their native response; `instanceof` narrowing from an
+  `unknown` value yields `any` for `.response` (a TypeScript limitation for
+  generic classes) — annotate the catch variable or helper to recover the
+  precise type. The default keeps `Response`, so existing fetch code is
+  unaffected.
+
 ## [0.1.1] — 2026-11-11
 
 ### Added

@@ -164,12 +164,16 @@ export class AdaptiveLimiter {
     private readonly clock: Clock,
   ) {}
 
+  /** Pacing interval implied by the static `initial` fallback (0 when absent). */
+  private initialIntervalMs(): number {
+    const initial = this.opts.initial;
+    return initial !== null && initial.limit > 0 ? initial.windowMs / initial.limit : 0;
+  }
+
   private runtime(key: string): KeyRuntime {
     let rt = this.keys.get(key);
     if (rt === undefined) {
-      const initial = this.opts.initial;
-      const interval = initial !== null && initial.limit > 0 ? initial.windowMs / initial.limit : 0;
-      rt = new KeyRuntime(this.opts.maxConcurrent, interval);
+      rt = new KeyRuntime(this.opts.maxConcurrent, this.initialIntervalMs());
       this.keys.set(key, rt);
     }
     return rt;
@@ -206,6 +210,61 @@ export class AdaptiveLimiter {
     rt.notify();
   }
 
+  /**
+   * Forgets everything the server has told us about a key (all keys when no
+   * argument is given): the key falls back to the static `initial` pacing
+   * (or free dispatching when `initial` is not configured) until fresh
+   * headers arrive.
+   *
+   * Honest semantics:
+   * - Concurrency slots of in-flight requests are preserved (resetting does
+   *   not open the `maxConcurrent` floodgates).
+   * - Waits already in progress are NOT interrupted: a request paused until
+   *   a reset point sleeps out its pause and only then re-decides — against
+   *   the cleared state, so it dispatches (or falls back to `initial`
+   *   spacing). Use an `AbortSignal` to cut an ongoing pause short.
+   */
+  reset(key?: string): void {
+    if (key === undefined) {
+      for (const rt of this.keys.values()) this.clearState(rt);
+    } else {
+      const rt = this.keys.get(key);
+      if (rt !== undefined) this.clearState(rt);
+    }
+  }
+
+  private clearState(rt: KeyRuntime): void {
+    rt.observed = null;
+    rt.remaining = Number.POSITIVE_INFINITY;
+    rt.resetAt = null;
+    rt.minIntervalMs = this.initialIntervalMs();
+    rt.pausedForResetAt = null;
+  }
+
+  /**
+   * Snapshot of the effective state a key's next decision would use:
+   * `remaining` adjusted for requests already dispatched in the current
+   * window (`Infinity` while unknown/unlimited) and possibly a
+   * `Retry-After`-overridden reset. `undefined` for keys never used.
+   */
+  getState(key: string): RateLimitState | undefined {
+    const rt = this.keys.get(key);
+    if (rt === undefined) return undefined;
+    // Apply the same lazy roll-over `decide` would perform on the next
+    // decision, so the snapshot never reports a reset the limiter itself
+    // already considers passed. Idempotent and race-free (synchronous).
+    this.rollIfPassed(rt, this.clock.now().getTime());
+    return this.snapshot(rt);
+  }
+
+  /** Rolls a passed reset point over (budget unknown again). Idempotent. */
+  private rollIfPassed(rt: KeyRuntime, now: number): void {
+    if (rt.resetAt !== null && now >= rt.resetAt) {
+      rt.remaining = Number.POSITIVE_INFINITY;
+      rt.pausedForResetAt = null;
+    }
+  }
+
   /** Runs `fn` under pacing and concurrency limits for `key`. */
   async run<T>(key: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const rt = this.runtime(key);
@@ -226,17 +285,14 @@ export class AdaptiveLimiter {
     const now = this.clock.now().getTime();
     // The window has rolled over since the last observation: budget is
     // unknown again, so nothing blocks until fresh headers arrive.
-    if (rt.resetAt !== null && now >= rt.resetAt) {
-      rt.remaining = Number.POSITIVE_INFINITY;
-      rt.pausedForResetAt = null;
-    }
+    this.rollIfPassed(rt, now);
 
     const projected = rt.remaining - 1; // Infinity - 1 === Infinity
     if (projected < 0) {
       // Would overdraw the observed budget: wait for reset / state change.
       return this.pauseDecision(rt, now);
     }
-    const view = this.viewState(rt);
+    const view = this.snapshot(rt);
     if (this.opts.shouldPause(view)) {
       // Proactive pause until reset instead of catching a 429 after the fact.
       return this.pauseDecision(rt, now);
@@ -264,11 +320,13 @@ export class AdaptiveLimiter {
   }
 
   /**
-   * The live state view passed to `shouldPause`: the observed state with
-   * `remaining` reduced by requests already dispatched in this window
-   * (`Infinity` while unknown/unlimited) and the current reset point.
+   * The live state view passed to `shouldPause` (and surfaced by
+   * {@link AdaptiveLimiter.getState}): the observed state with `remaining`
+   * reduced by requests already dispatched in this window (`Infinity`
+   * while unknown/unlimited) and the current reset point. Callers roll a
+   * passed reset point over first (`rollIfPassed`).
    */
-  private viewState(rt: KeyRuntime): RateLimitState {
+  private snapshot(rt: KeyRuntime): RateLimitState {
     return {
       limit: rt.observed?.limit ?? -1,
       remaining: rt.remaining,

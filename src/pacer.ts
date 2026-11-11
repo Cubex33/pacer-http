@@ -9,7 +9,7 @@ import {
 } from "./limiter/limiter.js";
 import { parseRateLimitHeaders } from "./parse/headers.js";
 import { parseRetryAfter } from "./parse/retryAfter.js";
-import type { PacerOptions } from "./types.js";
+import type { PacerOptions, RateLimitState } from "./types.js";
 
 /** Extra knobs for a single {@link Pacer.schedule} call. */
 export interface ScheduleOptions {
@@ -31,6 +31,35 @@ const NO_SIGNAL: AbortSignal = new AbortController().signal;
 
 /** Anything the built-in fetch accepts as a request target. */
 export type FetchInput = Request | string | URL;
+
+/**
+ * What the retry engine needs to see of a client response: the status, a
+ * case-insensitive single-value header lookup, and — for clients that
+ * deliver non-2xx responses by throwing (axios with its default
+ * `validateStatus`, got with `throwHttpErrors`) — the original error to
+ * rethrow when the response is not retried, preserving the client's native
+ * semantics.
+ */
+export interface ResponseView {
+  /** HTTP status code. */
+  status: number;
+  /** Case-insensitive lookup of a single header value ("retry-after", …). */
+  getHeader(name: string): string | null;
+  /**
+   * When set, a non-retried response is delivered by rethrowing this error
+   * instead of resolving the response. Exhausted retries still throw
+   * {@link PacerExhaustedError} (with the response attached).
+   */
+  error?: unknown;
+  /**
+   * Called when the engine is about to drop this response because it will
+   * retry — release any resources it holds (e.g. dump undici's body stream
+   * so the connection can be reused). Not called for the final response
+   * (returned, rethrown, or attached to {@link PacerExhaustedError}).
+   * Must not throw; the hook owns its error handling.
+   */
+  discard?: () => void;
+}
 
 /**
  * Adaptive rate limiter for non-fetch clients, or as the building block for
@@ -83,12 +112,17 @@ export class Pacer {
    */
   observe(res: Response, key?: string): void {
     const bucket = key ?? (res.url !== "" ? this.opts.keyFn(res.url) : "default");
+    this.observeView(bucket, { status: res.status, getHeader: (name) => res.headers.get(name) });
+  }
+
+  /** Feeds a client response view into the limiter (shared by all adapters). */
+  private observeView(key: string, view: ResponseView): void {
     const now = this.clock.now();
-    const state = parseRateLimitHeaders(res.headers, now);
-    this.limiter.observe(bucket, state);
-    const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"), now);
-    if (retryAfterMs !== null && retryAfterMs > 0 && this.opts.retryOn.has(res.status)) {
-      this.limiter.setReset(bucket, now.getTime() + retryAfterMs);
+    const state = parseRateLimitHeaders({ get: (name) => view.getHeader(name) }, now);
+    this.limiter.observe(key, state);
+    const retryAfterMs = parseRetryAfter(view.getHeader("retry-after"), now);
+    if (retryAfterMs !== null && retryAfterMs > 0 && this.opts.retryOn.has(view.status)) {
+      this.limiter.setReset(key, now.getTime() + retryAfterMs);
     }
   }
 
@@ -108,17 +142,50 @@ export class Pacer {
   async fetch(fetchFn: typeof fetch, input: FetchInput, init?: RequestInit): Promise<Response> {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const key = this.opts.keyFn(url, init);
-    const signal = init?.signal ?? undefined;
+    return this.runWithRetry(
+      () => fetchFn(input, init),
+      (res) => ({ status: res.status, getHeader: (name) => res.headers.get(name) }),
+      { key, signal: init?.signal ?? undefined },
+    );
+  }
+
+  /**
+   * The client-agnostic retry loop behind {@link Pacer.fetch} and every
+   * adapter (`wrapAxios` / `wrapGot` / `wrapUndici`): paces `dispatch` under
+   * the limiter for `key`, observes each response through `view`, and
+   * retries statuses in `retryOn` up to `maxRetries` times — waiting exactly
+   * `Retry-After` (+ jitter) when the server sends one, exponential
+   * 1s/2s/4s… backoff (+ jitter) otherwise. Exhausted budgets throw
+   * {@link PacerExhaustedError} with the client's native response attached;
+   * non-retried responses resolve (or rethrow `view.error`, for clients
+   * that deliver error statuses as exceptions).
+   *
+   * Use this to build adapters for clients we do not ship one for.
+   */
+  async runWithRetry<T>(
+    dispatch: () => Promise<T>,
+    view: (response: T) => ResponseView,
+    opts?: ScheduleOptions,
+  ): Promise<T> {
+    const key = opts?.key ?? "default";
+    const signal = opts?.signal;
     let attempts = 0;
     for (;;) {
       attempts++;
-      const res = await this.limiter.run(key, () => fetchFn(input, init), signal);
-      this.observe(res, key);
-      if (!this.opts.retryOn.has(res.status)) return res;
+      const res = await this.limiter.run(key, dispatch, signal);
+      const v = view(res);
+      this.observeView(key, v);
+      if (!this.opts.retryOn.has(v.status)) {
+        if (v.error !== undefined) throw v.error;
+        return res;
+      }
       if (attempts > this.opts.maxRetries) {
         throw new PacerExhaustedError(res, attempts);
       }
-      const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"), this.clock.now());
+      // The response is being dropped: let the adapter release it (undici
+      // bodies must be dumped for the connection to be reusable).
+      v.discard?.();
+      const retryAfterMs = parseRetryAfter(v.getHeader("retry-after"), this.clock.now());
       const baseWaitMs =
         retryAfterMs !== null && retryAfterMs > 0 ? retryAfterMs : backoffMs(attempts);
       // Retry waits are abortable via the clock but are NOT interrupted by
@@ -128,13 +195,39 @@ export class Pacer {
       // the caller and abort the fetch).
       this.opts.onRetry?.({
         key,
-        status: res.status,
+        status: v.status,
         attempt: attempts + 1,
         delayMs: waitMs,
         retryAfterMs,
       });
       if (waitMs > 0) await this.clock.sleep(waitMs, { signal }).promise;
     }
+  }
+
+  /**
+   * Forgets everything the server has reported for a key (every key when
+   * omitted): the key falls back to the static `initial` pacing until
+   * fresh headers arrive.
+   *
+   * Pauses already in progress are NOT interrupted — a request paused until
+   * a reset point sleeps out its pause and only then re-decides against the
+   * cleared state (so it dispatches, or falls back to `initial` spacing);
+   * abort it with an `AbortSignal` to cut it short. Concurrency slots of
+   * in-flight requests are preserved.
+   */
+  reset(key?: string): void {
+    this.limiter.reset(key);
+  }
+
+  /**
+   * Snapshot of the effective state the next decision for `key` would use:
+   * `remaining` adjusted for requests already dispatched in the current
+   * window (`Infinity` while the server has not reported a quota), the
+   * reset point (possibly overridden by `Retry-After`), and the policy
+   * windows. `undefined` for keys that were never observed or scheduled.
+   */
+  getState(key: string): RateLimitState | undefined {
+    return this.limiter.getState(key);
   }
 }
 

@@ -1,4 +1,4 @@
-export { Pacer, pacer, type ScheduleOptions } from "./pacer.js";
+export { Pacer, pacer, type ScheduleOptions, type ResponseView } from "./pacer.js";
 export { PacerExhaustedError } from "./errors.js";
 export { parseRateLimitHeaders, type HeadersLike, type SfItem } from "./parse/headers.js";
 export { parseRetryAfter } from "./parse/retryAfter.js";
