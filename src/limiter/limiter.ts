@@ -1,5 +1,5 @@
 import { createAbortError, type Clock } from "./clock.js";
-import type { PacerJitter, PacerOptions, RateLimitState, RetryInfo } from "../types.js";
+import type { PacerJitter, PacerOptions, RateLimitState, RetryInfo, TokenQuota } from "../types.js";
 
 /** Fully-resolved pacer configuration (defaults applied). */
 export interface ResolvedPacerOptions {
@@ -11,6 +11,8 @@ export interface ResolvedPacerOptions {
   readonly keyFn: (url: string, init?: RequestInit) => string;
   readonly maxWaitMs: number;
   readonly shouldPause: (s: RateLimitState) => boolean;
+  readonly tokenCost: number | ((url: string, init?: RequestInit) => number) | null;
+  readonly shouldPauseTokens: (q: TokenQuota) => boolean;
   readonly onStateChange: ((key: string, s: RateLimitState | null) => void) | null;
   readonly onRetry: ((info: RetryInfo) => void) | null;
 }
@@ -39,6 +41,8 @@ export function resolvePacerOptions(opts: PacerOptions = {}): ResolvedPacerOptio
     keyFn: opts.key ?? defaultKey,
     maxWaitMs: opts.maxWaitMs ?? DEFAULT_MAX_WAIT_MS,
     shouldPause: opts.shouldPause ?? ((s) => s.remaining <= 1),
+    tokenCost: opts.tokenCost ?? null,
+    shouldPauseTokens: opts.shouldPauseTokens ?? ((q) => q.remaining <= 0),
     onStateChange: opts.onStateChange ?? null,
     onRetry: opts.onRetry ?? null,
   };
@@ -140,6 +144,17 @@ class KeyRuntime {
   /** Reset point we already paused for once (maxWaitMs liveness guard). */
   pausedForResetAt: number | null = null;
 
+  /** Token quota allocated for the window; `-1` = unknown. */
+  tokenLimit = -1;
+  /** Server-reported tokens left; `Infinity` = unknown/unlimited. */
+  tokenRemaining = Number.POSITIVE_INFINITY;
+  /** Expected token window end, epoch ms. */
+  tokenResetAt: number | null = null;
+  /** Sum of token costs reserved by in-flight requests. */
+  tokenReserved = 0;
+  /** Token reset point we already paused for once (liveness guard). */
+  pausedForTokenResetAt: number | null = null;
+
   constructor(maxConcurrent: number, initialIntervalMs: number) {
     this.semaphore = new Semaphore(maxConcurrent);
     this.minIntervalMs = initialIntervalMs;
@@ -182,21 +197,49 @@ export class AdaptiveLimiter {
   /**
    * Applies a parsed observation to a key. `state === null` (no usable
    * headers) keeps the previous state and just reports via `onStateChange`.
-   * Non-`requests` quota units are reported but not applied (out of scope).
+   *
+   * Dimensions are applied independently:
+   * - `unit` absent or `"requests"` → the request dimension (as before);
+   * - a `tokens` field → the token dimension (also when the request
+   *   dimension is present);
+   * - `unit: "tokens"` → only the token dimension: the request budget is
+   *   left untouched (a tokens-only response must not erase what the server
+   *   said about requests).
+   *
+   * Other quota units (`content-bytes`, …) are reported but not paced. The
+   * server is the source of truth for both dimensions; in-flight token
+   * reservations are never rewritten by an observation — they are released
+   * when their requests settle.
    */
   observe(key: string, state: RateLimitState | null): void {
     const rt = this.runtime(key);
     this.opts.onStateChange?.(key, state);
     if (state === null) return;
-    if (state.unit !== undefined && state.unit !== "requests") return;
-    rt.observed = state;
-    // Full resync on every observation: a grown `remaining` (new window)
-    // cancels pending pauses; a shrunken one tightens them.
-    rt.remaining = state.remaining >= 0 ? state.remaining : Number.POSITIVE_INFINITY;
-    rt.resetAt = state.reset !== null ? state.reset.getTime() : null;
-    rt.minIntervalMs = intervalFromWindows(state.windows);
-    rt.pausedForResetAt = null;
-    rt.notify();
+
+    const requestsDimension = state.unit === undefined || state.unit === "requests";
+    if (requestsDimension) {
+      rt.observed = state;
+      // Full resync on every observation: a grown `remaining` (new window)
+      // cancels pending pauses; a shrunken one tightens them.
+      rt.remaining = state.remaining >= 0 ? state.remaining : Number.POSITIVE_INFINITY;
+      rt.resetAt = state.reset !== null ? state.reset.getTime() : null;
+      rt.minIntervalMs = intervalFromWindows(state.windows);
+      rt.pausedForResetAt = null;
+    }
+
+    const tokens: TokenQuota | undefined =
+      state.tokens ??
+      (state.unit === "tokens"
+        ? { limit: state.limit, remaining: state.remaining, reset: state.reset }
+        : undefined);
+    if (tokens !== undefined) {
+      rt.tokenLimit = tokens.limit;
+      rt.tokenRemaining = tokens.remaining >= 0 ? tokens.remaining : Number.POSITIVE_INFINITY;
+      rt.tokenResetAt = tokens.reset !== null ? tokens.reset.getTime() : null;
+      rt.pausedForTokenResetAt = null;
+    }
+
+    if (requestsDimension || tokens !== undefined) rt.notify();
   }
 
   /**
@@ -239,6 +282,14 @@ export class AdaptiveLimiter {
     rt.resetAt = null;
     rt.minIntervalMs = this.initialIntervalMs();
     rt.pausedForResetAt = null;
+    // Token reservations of in-flight requests are cleared with the state;
+    // their `finally` releases clamp at zero, so the counter never goes
+    // negative.
+    rt.tokenLimit = -1;
+    rt.tokenRemaining = Number.POSITIVE_INFINITY;
+    rt.tokenResetAt = null;
+    rt.tokenReserved = 0;
+    rt.pausedForTokenResetAt = null;
   }
 
   /**
@@ -253,8 +304,13 @@ export class AdaptiveLimiter {
     // Apply the same lazy roll-over `decide` would perform on the next
     // decision, so the snapshot never reports a reset the limiter itself
     // already considers passed. Idempotent and race-free (synchronous).
-    this.rollIfPassed(rt, this.clock.now().getTime());
-    return this.snapshot(rt);
+    const now = this.clock.now().getTime();
+    this.rollIfPassed(rt, now);
+    this.rollTokensIfPassed(rt, now);
+    const tokens = this.tokenSnapshot(rt);
+    const state = this.snapshot(rt);
+    if (tokens !== undefined) state.tokens = tokens;
+    return state;
   }
 
   /** Rolls a passed reset point over (budget unknown again). Idempotent. */
@@ -265,13 +321,30 @@ export class AdaptiveLimiter {
     }
   }
 
-  /** Runs `fn` under pacing and concurrency limits for `key`. */
-  async run<T>(key: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  /** Same lazy roll-over for the token window. Idempotent. */
+  private rollTokensIfPassed(rt: KeyRuntime, now: number): void {
+    if (rt.tokenResetAt !== null && now >= rt.tokenResetAt) {
+      rt.tokenRemaining = Number.POSITIVE_INFINITY;
+      rt.pausedForTokenResetAt = null;
+    }
+  }
+
+  /**
+   * Runs `fn` under pacing and concurrency limits for `key`.
+   *
+   * `tokenCost` is the estimated token cost of this request: when the token
+   * dimension is known and `remaining - reserved < tokenCost`, the request
+   * waits until the token reset. The cost is reserved on dispatch and
+   * released when the request settles (success, error, or abort), so
+   * concurrent requests cannot collectively overdraw the token budget.
+   * `0` disables token pacing for this request.
+   */
+  async run<T>(key: string, fn: () => Promise<T>, signal?: AbortSignal, tokenCost = 0): Promise<T> {
     const rt = this.runtime(key);
     for (;;) {
-      const decision = await rt.mutex.run(() => this.decide(rt));
+      const decision = await rt.mutex.run(() => this.decide(rt, tokenCost));
       if (decision.kind === "dispatch") {
-        return this.execute(rt, fn, signal);
+        return this.execute(rt, fn, signal, tokenCost);
       }
       await this.sleepInterruptible(
         rt,
@@ -281,11 +354,12 @@ export class AdaptiveLimiter {
     }
   }
 
-  private decide(rt: KeyRuntime): Decision {
+  private decide(rt: KeyRuntime, tokenCost: number): Decision {
     const now = this.clock.now().getTime();
     // The window has rolled over since the last observation: budget is
     // unknown again, so nothing blocks until fresh headers arrive.
     this.rollIfPassed(rt, now);
+    this.rollTokensIfPassed(rt, now);
 
     const projected = rt.remaining - 1; // Infinity - 1 === Infinity
     if (projected < 0) {
@@ -296,6 +370,16 @@ export class AdaptiveLimiter {
     if (this.opts.shouldPause(view)) {
       // Proactive pause until reset instead of catching a 429 after the fact.
       return this.pauseDecision(rt, now);
+    }
+    if (tokenCost > 0) {
+      const tokens = this.tokenSnapshot(rt);
+      if (tokens !== undefined) {
+        // `remaining` already subtracts costs reserved by in-flight
+        // requests, so a concurrent request cannot spend tokens another one
+        // has already claimed.
+        if (tokens.remaining < tokenCost) return this.tokenPauseDecision(rt, now);
+        if (this.opts.shouldPauseTokens(tokens)) return this.tokenPauseDecision(rt, now);
+      }
     }
     if (rt.minIntervalMs > 0 && rt.lastDispatchAt !== null) {
       const dueAt = rt.lastDispatchAt + rt.minIntervalMs;
@@ -319,6 +403,19 @@ export class AdaptiveLimiter {
     return { kind: "wait", waitMs };
   }
 
+  /** Token counterpart of {@link AdaptiveLimiter.pauseDecision}. */
+  private tokenPauseDecision(rt: KeyRuntime, now: number): Decision {
+    if (rt.tokenResetAt === null) return { kind: "dispatch" }; // no reset → cannot pause
+    const waitMs = clamp(rt.tokenResetAt - now, 0, this.opts.maxWaitMs);
+    if (waitMs <= 0) return { kind: "dispatch" };
+    if (rt.pausedForTokenResetAt === rt.tokenResetAt) {
+      // Already waited once for this token reset; proceed for liveness.
+      return { kind: "dispatch" };
+    }
+    rt.pausedForTokenResetAt = rt.tokenResetAt;
+    return { kind: "wait", waitMs };
+  }
+
   /**
    * The live state view passed to `shouldPause` (and surfaced by
    * {@link AdaptiveLimiter.getState}): the observed state with `remaining`
@@ -335,25 +432,63 @@ export class AdaptiveLimiter {
     };
   }
 
-  private async execute<T>(rt: KeyRuntime, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  /**
+   * Effective token snapshot: the server-reported budget minus costs
+   * reserved by in-flight requests, clamped at zero. `undefined` while the
+   * server has never advertised a token dimension.
+   */
+  private tokenSnapshot(rt: KeyRuntime): TokenQuota | undefined {
+    if (
+      rt.tokenRemaining === Number.POSITIVE_INFINITY &&
+      rt.tokenLimit < 0 &&
+      rt.tokenResetAt === null
+    ) {
+      return undefined;
+    }
+    const remaining =
+      rt.tokenRemaining === Number.POSITIVE_INFINITY
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, rt.tokenRemaining - rt.tokenReserved);
+    return {
+      limit: rt.tokenLimit,
+      remaining,
+      reset: rt.tokenResetAt === null ? null : new Date(rt.tokenResetAt),
+    };
+  }
+
+  private async execute<T>(
+    rt: KeyRuntime,
+    fn: () => Promise<T>,
+    signal: AbortSignal | undefined,
+    tokenCost: number,
+  ): Promise<T> {
     const now = this.clock.now().getTime();
     if (rt.remaining !== Number.POSITIVE_INFINITY) {
       rt.remaining -= 1;
     }
     rt.lastDispatchAt = now;
+    if (tokenCost > 0) rt.tokenReserved += tokenCost;
     try {
-      await rt.semaphore.acquire(signal);
-    } catch (err) {
-      // Aborted while queued for a concurrency slot: give the slot back.
-      if (rt.remaining !== Number.POSITIVE_INFINITY) {
-        rt.remaining += 1;
+      try {
+        await rt.semaphore.acquire(signal);
+      } catch (err) {
+        // Aborted while queued for a concurrency slot: give the slot back.
+        if (rt.remaining !== Number.POSITIVE_INFINITY) {
+          rt.remaining += 1;
+        }
+        throw err;
       }
-      throw err;
-    }
-    try {
-      return await fn();
+      try {
+        return await fn();
+      } finally {
+        rt.semaphore.release();
+      }
     } finally {
-      rt.semaphore.release();
+      // Released on success, error and abort alike. The clamp keeps the
+      // counter non-negative when `reset()` cleared it mid-flight.
+      if (tokenCost > 0) {
+        rt.tokenReserved = Math.max(0, rt.tokenReserved - tokenCost);
+      }
     }
   }
 

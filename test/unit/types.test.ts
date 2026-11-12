@@ -15,6 +15,7 @@ import {
   type RetryInfo,
   type ScheduleOptions,
   type SleepHandle,
+  type TokenQuota,
 } from "../../src/index.js";
 
 describe("public API types", () => {
@@ -35,8 +36,13 @@ describe("public API types", () => {
     expectTypeOf(result).toEqualTypeOf<Promise<number>>();
   });
 
-  it("schedule options carry key and signal", () => {
-    expectTypeOf<ScheduleOptions>().toEqualTypeOf<{ key?: string; signal?: AbortSignal }>();
+  it("schedule options carry key, signal and the token-cost request context", () => {
+    expectTypeOf<ScheduleOptions>().toEqualTypeOf<{
+      key?: string;
+      signal?: AbortSignal;
+      url?: string;
+      init?: RequestInit;
+    }>();
   });
 
   it("PacerExhaustedError carries the response and the attempt count", () => {
@@ -47,10 +53,15 @@ describe("public API types", () => {
     expect(err).toBeInstanceOf(Error);
   });
 
-  it("RateLimitState and windows are fully typed", () => {
+  it("RateLimitState, windows and token quotas are fully typed", () => {
     expectTypeOf<RateLimitWindow>().toEqualTypeOf<{
       limit: number;
       windowSec: number;
+    }>();
+    expectTypeOf<TokenQuota>().toEqualTypeOf<{
+      limit: number;
+      remaining: number;
+      reset: Date | null;
     }>();
     expectTypeOf<RateLimitState>().toEqualTypeOf<{
       limit: number;
@@ -58,6 +69,7 @@ describe("public API types", () => {
       reset: Date | null;
       windows: RateLimitWindow[];
       unit?: string;
+      tokens?: TokenQuota;
     }>();
   });
 
@@ -71,6 +83,8 @@ describe("public API types", () => {
       key?: (url: string, init?: RequestInit) => string;
       maxWaitMs?: number;
       shouldPause?: (s: RateLimitState) => boolean;
+      tokenCost?: number | ((url: string, init?: RequestInit) => number);
+      shouldPauseTokens?: (q: TokenQuota) => boolean;
       onStateChange?: (key: string, s: RateLimitState | null) => void;
       onRetry?: (info: RetryInfo) => void;
       clock?: Clock;

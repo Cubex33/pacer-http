@@ -3,6 +3,36 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] — 2026-11-11
+
+### Added
+
+- Token-dimension parsing: OpenAI (`x-ratelimit-*-tokens`), Anthropic
+  (`anthropic-ratelimit-tokens-*`) and IETF `qu="tokens"` policies are
+  reported as `RateLimitState.tokens` (`{ limit, remaining, reset }`, exported
+  as `TokenQuota`) next to the request dimension. Tokens-only responses carry
+  `unit: "tokens"` plus `tokens`; token policies are excluded from `windows`.
+  Garbage token headers are ignored without discarding a valid request
+  dimension; a garbage request dimension still invalidates the whole family.
+- Token-aware pacing for LLM APIs: `tokenCost` (`number` or
+  `(url, init) => number`) and `shouldPauseTokens` (`(q: TokenQuota) => boolean`,
+  default `q.remaining <= 0`) options. Each request reserves its cost on
+  dispatch and releases it when it settles, so concurrent requests cannot
+  overdraw a TPM budget; requests wait for the token reset with the same
+  `maxWaitMs` cap and liveness guard as the request dimension. Without
+  `tokenCost` the token dimension is reported but never paced (0.2.x
+  compatibility).
+- `getState(key).tokens` exposes the reservation-adjusted token snapshot;
+  `reset()` clears the token window as well.
+- README "Token quotas (LLM APIs)" section, Options table entries, and seven
+  new golden fixtures (49 total).
+
+### Changed
+
+- `RateLimitState` gains an optional `tokens` field; `ScheduleOptions` gains
+  optional `url` / `init`, filled in by `Pacer#fetch` and the adapters so a
+  functional `tokenCost` sees the request. Both are backward compatible.
+
 ## [0.2.0] — 2026-11-11
 
 ### Added

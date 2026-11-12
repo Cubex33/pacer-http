@@ -68,6 +68,40 @@ describe("integration against a real node:http server", () => {
     expect(stamps[10]!).toBeLessThan(resetMono + 500);
   }, 10_000);
 
+  it("paces a second token batch until the token reset without a single 429", async () => {
+    let hits = 0;
+    handler = (_req, res) => {
+      hits++;
+      // A 300-token window: the four 100-token requests overdraw it, so the
+      // last one must wait for the token reset (2s) instead of collecting 429s.
+      const tokenRemaining = Math.max(0, 300 - 100 * hits);
+      res.writeHead(200, {
+        "x-ratelimit-limit-requests": "100",
+        "x-ratelimit-remaining-requests": String(Math.max(0, 100 - hits)),
+        "x-ratelimit-reset-requests": "60s",
+        "x-ratelimit-limit-tokens": "300",
+        "x-ratelimit-remaining-tokens": String(tokenRemaining),
+        "x-ratelimit-reset-tokens": "2s",
+      });
+      res.end("ok");
+    };
+
+    const fetch = pacer(globalThis.fetch, { jitter: "none", tokenCost: 100 });
+    const stamps: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      const res = await fetch(`${base}/tokens?i=${i}`);
+      expect(res.status).toBe(200); // never a 429
+      stamps.push(performance.now());
+    }
+
+    expect(hits).toBe(4);
+    // The first three requests flow back-to-back; the fourth waits for the
+    // token window to reset (~2s), not for the 60s request reset.
+    expect(stamps[2]! - stamps[0]!).toBeLessThan(1_500);
+    expect(stamps[3]! - stamps[2]!).toBeGreaterThanOrEqual(1_500);
+    expect(stamps[3]! - stamps[2]!).toBeLessThan(3_500);
+  }, 10_000);
+
   it("aborts a paused request with AbortError within 10ms", async () => {
     const resetEpochSec = Math.ceil((Date.now() + 60_000) / 1000);
     handler = (_req, res) => {

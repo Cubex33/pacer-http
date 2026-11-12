@@ -1,0 +1,22 @@
+{
+  "name": "IETF draft-11 / token policy only becomes the primary dimension",
+  "category": "ietf",
+  "target": "headers",
+  "headers": {
+    "ratelimit": "\"tokens\";r=150000;t=30",
+    "ratelimit-policy": "\"tokens\";q=200000;w=60;qu=\"tokens\""
+  },
+  "expected": {
+    "limit": 200000,
+    "remaining": 150000,
+    "reset": "2026-11-11T12:00:30.000Z",
+    "windows": [],
+    "unit": "tokens",
+    "tokens": {
+      "limit": 200000,
+      "remaining": 150000,
+      "reset": "2026-11-11T12:00:30.000Z"
+    }
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

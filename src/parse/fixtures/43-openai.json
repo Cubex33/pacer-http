@@ -1,0 +1,26 @@
+{
+  "name": "OpenAI / combined requests and tokens buckets",
+  "category": "openai",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit-requests": "10000",
+    "x-ratelimit-remaining-requests": "9998",
+    "x-ratelimit-reset-requests": "20ms",
+    "x-ratelimit-limit-tokens": "2000000",
+    "x-ratelimit-remaining-tokens": "1998900",
+    "x-ratelimit-reset-tokens": "1m20s"
+  },
+  "expected": {
+    "limit": 10000,
+    "remaining": 9998,
+    "reset": "2026-11-11T12:00:00.020Z",
+    "windows": [],
+    "unit": "requests",
+    "tokens": {
+      "limit": 2000000,
+      "remaining": 1998900,
+      "reset": "2026-11-11T12:01:20.000Z"
+    }
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

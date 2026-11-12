@@ -3,7 +3,7 @@ import { PacerExhaustedError } from "../../src/errors.js";
 import { SystemClock } from "../../src/limiter/clock.js";
 import { backoffMs, jitterMs } from "../../src/limiter/limiter.js";
 import { Pacer, pacer } from "../../src/pacer.js";
-import type { RateLimitState, RetryInfo } from "../../src/types.js";
+import type { RateLimitState, RetryInfo, TokenQuota } from "../../src/types.js";
 
 /* ------------------------------------------------------------------ *
  * Helpers
@@ -71,6 +71,8 @@ function ietf(
 const URL_A = "https://api.example.com/a";
 const URL_B = "https://api.example.com/b"; // same origin as URL_A
 const URL_C = "https://other.example.com/c"; // a different origin
+/** The bucket used by `Pacer#schedule` when no key is given. */
+const KEY = "default";
 
 let t0: number;
 
@@ -657,6 +659,266 @@ describe("onStateChange", () => {
     p.observe(new Response("ok", { headers: gh(10, 5, 1_000) }));
     expect(seen).toHaveLength(1);
     expect(seen[0]).toEqual(["default", expect.objectContaining({ remaining: 5 })]);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * Token quotas (LLM APIs)
+ * ------------------------------------------------------------------ */
+
+/** OpenAI-style token headers; reset is a duration of `resetInMs`. */
+function tokens(limit: number, remaining: number, resetInMs: number): Record<string, string> {
+  return {
+    "x-ratelimit-limit-tokens": String(limit),
+    "x-ratelimit-remaining-tokens": String(remaining),
+    "x-ratelimit-reset-tokens": `${resetInMs}ms`,
+  };
+}
+
+describe("token quotas", () => {
+  it("paces by the token budget: two 60-token requests at remaining=100 wait for reset", async () => {
+    const { fn, calls } = scriptedFetch([
+      { headers: tokens(1000, 100, 60_000) },
+      { headers: tokens(1000, 40, 60_000) }, // the server counted the second request
+      { headers: tokens(1000, 0, 60_000) },
+    ]);
+    const fetch = pacer(fn, { tokenCost: 60, jitter: "none" });
+    await fetch(URL_A); // learns remaining=100
+
+    const second = fetch(URL_A); // 100 >= 60 → dispatch, reserves 60
+    const third = fetch(URL_A); // 100 - 60 = 40 < 60 → waits for the token reset
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.length).toBe(2); // only one of the pair went out
+    expect(calls[1]).toBe(calls[0]);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await Promise.all([second, third]);
+    expect(calls.length).toBe(3);
+    expect(calls[2]! - calls[1]!).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it("releases the token reservation when the request throws", async () => {
+    const p = new Pacer({ tokenCost: 60, jitter: "none" });
+    p.observe(new Response("ok", { headers: tokens(1000, 100, 60_000) }), KEY);
+
+    let fail!: () => void;
+    const job = p.schedule(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          fail = () => reject(new Error("boom"));
+        }),
+      { key: KEY },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(p.getState(KEY)!.tokens!.remaining).toBe(40); // 100 - 60 reserved
+
+    fail();
+    await expect(job).rejects.toThrow("boom");
+    expect(p.getState(KEY)!.tokens!.remaining).toBe(100);
+  });
+
+  it("releases the token reservation when a request queued for a slot is aborted", async () => {
+    const p = new Pacer({ tokenCost: 40, maxConcurrent: 1, jitter: "none" });
+    p.observe(new Response("ok", { headers: tokens(1000, 100, 60_000) }), KEY);
+
+    let releaseFirst!: () => void;
+    const first = p.schedule(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        }),
+      { key: KEY },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    const controller = new AbortController();
+    const second = p.schedule(() => Promise.resolve("never"), {
+      key: KEY,
+      signal: controller.signal,
+    });
+    await vi.advanceTimersByTimeAsync(0); // reserved, then queued behind the slot
+    expect(p.getState(KEY)!.tokens!.remaining).toBe(20); // 100 - 40 - 40
+
+    controller.abort();
+    await expect(second).rejects.toMatchObject({ name: "AbortError" });
+    expect(p.getState(KEY)!.tokens!.remaining).toBe(60);
+
+    releaseFirst();
+    await first;
+    expect(p.getState(KEY)!.tokens!.remaining).toBe(100);
+  });
+
+  it("does not pace the token dimension when tokenCost is not configured", async () => {
+    const { fn, calls } = scriptedFetch([{ headers: tokens(1000, 0, 90_000) }, {}]);
+    const fetch = pacer(fn, { jitter: "none" }); // no tokenCost: 0.2.0 behaviour
+    await fetch(URL_A); // observes an exhausted token bucket
+    await fetch(URL_A); // must dispatch immediately
+    expect(calls.length).toBe(2);
+  });
+
+  it("calls shouldPauseTokens with the reservation-adjusted snapshot", async () => {
+    const seen: TokenQuota[] = [];
+    const p = new Pacer({
+      tokenCost: 10,
+      jitter: "none",
+      shouldPauseTokens: (q) => {
+        seen.push(q);
+        return false;
+      },
+    });
+    p.observe(new Response("ok", { headers: tokens(1000, 100, 60_000) }), KEY);
+
+    let release!: () => void;
+    const first = p.schedule(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      { key: KEY },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen[0]).toMatchObject({ limit: 1000, remaining: 100 });
+    expect(seen[0]!.reset).toBeInstanceOf(Date);
+
+    const second = p.schedule(() => Promise.resolve("ok"), { key: KEY });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(seen[1]).toMatchObject({ limit: 1000, remaining: 90 }); // 10 reserved
+
+    release();
+    await Promise.all([first, second]);
+  });
+
+  it("exposes the token window in getState and clears it on reset", async () => {
+    const p = new Pacer({ tokenCost: 60, jitter: "none" });
+    p.observe(new Response("ok", { headers: tokens(1000, 100, 60_000) }), KEY);
+    const before = p.getState(KEY)!.tokens!;
+    expect(before.limit).toBe(1000);
+    expect(before.remaining).toBe(100);
+    expect(before.reset).toBeInstanceOf(Date);
+
+    let release!: () => void;
+    const job = p.schedule(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      { key: KEY },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(p.getState(KEY)!.tokens!.remaining).toBe(40);
+
+    p.reset(KEY);
+    expect(p.getState(KEY)!.tokens).toBeUndefined();
+    release();
+    await job;
+    expect(p.getState(KEY)!.tokens).toBeUndefined(); // the in-flight release clamps at zero
+    expect(p.getState(KEY)!.remaining).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("keeps request pacing active after a tokens-only observation", async () => {
+    const p = new Pacer({ jitter: "none", shouldPause: (s) => s.remaining <= 0 });
+    p.observe(new Response("ok", { headers: gh(10, 0, 30_000) }), KEY);
+    p.observe(new Response("ok", { headers: tokens(1000, 1000, 30_000) }), KEY);
+
+    const snap = p.getState(KEY)!;
+    expect(snap.remaining).toBe(0); // requests untouched by the token observation
+    expect(snap.tokens!.remaining).toBe(1000);
+
+    let dispatched = false;
+    const job = p.schedule(
+      () => {
+        dispatched = true;
+        return Promise.resolve("ok");
+      },
+      { key: KEY },
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(dispatched).toBe(false); // still paused by the request budget
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await job;
+    expect(dispatched).toBe(true);
+  });
+
+  it("rolls an expired token window over (budget unknown again)", async () => {
+    const p = new Pacer({ tokenCost: 60, jitter: "none" });
+    p.observe(new Response("ok", { headers: tokens(1000, 0, 5_000) }), KEY);
+    expect(p.getState(KEY)!.tokens!.remaining).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(p.getState(KEY)!.tokens!.remaining).toBe(Number.POSITIVE_INFINITY);
+
+    const job = p.schedule(() => Promise.resolve("ok"), { key: KEY });
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(job).resolves.toBe("ok");
+  });
+
+  it("truncates a token pause at maxWaitMs once, then proceeds for liveness", async () => {
+    const p = new Pacer({ tokenCost: 60, jitter: "none", maxWaitMs: 5_000 });
+    p.observe(new Response("ok", { headers: tokens(1000, 0, 90_000) }), KEY);
+
+    const job = p.schedule(() => Promise.resolve("ok"), { key: KEY });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(job).resolves.toBe("ok");
+  });
+
+  it("does not block when the token budget is spent but no reset is known", async () => {
+    const p = new Pacer({ tokenCost: 60, jitter: "none" });
+    p.observe(new Response("ok", { headers: { "x-ratelimit-remaining-tokens": "0" } }), KEY);
+
+    const job = p.schedule(() => Promise.resolve("ok"), { key: KEY });
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(job).resolves.toBe("ok");
+  });
+
+  it("evaluates a functional tokenCost per request with the URL and init", async () => {
+    const costs: Array<[string, RequestInit | undefined]> = [];
+    const { fn, calls } = scriptedFetch([
+      { headers: tokens(1000, 100, 60_000) },
+      { headers: tokens(1000, 40, 60_000) },
+      {},
+    ]);
+    const fetch = pacer(fn, {
+      jitter: "none",
+      tokenCost: (url, init) => {
+        costs.push([url, init]);
+        return 60;
+      },
+    });
+    await fetch(URL_A, { method: "POST" });
+    const second = fetch(URL_A, { method: "POST" });
+    const third = fetch(URL_A, { method: "POST" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.length).toBe(2); // the reservation made the third one wait
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await Promise.all([second, third]);
+    expect(costs[0]).toEqual([URL_A, { method: "POST" }]);
+    expect(costs).toHaveLength(3);
+  });
+
+  it("treats negative and NaN token costs as zero", async () => {
+    for (const cost of [-5, Number.NaN]) {
+      const { fn, calls } = scriptedFetch([{ headers: tokens(1000, 0, 90_000) }, {}]);
+      const fetch = pacer(fn, { jitter: "none", tokenCost: cost });
+      await fetch(URL_A);
+      await fetch(URL_A); // no token pacing at cost 0
+      expect(calls.length).toBe(2);
+    }
+  });
+
+  it("propagates tokenCost function errors without touching limiter state", async () => {
+    const p = new Pacer({
+      tokenCost: () => {
+        throw new Error("cost exploded");
+      },
+    });
+    p.observe(new Response("ok", { headers: tokens(1000, 100, 60_000) }), KEY);
+
+    await expect(p.schedule(() => Promise.resolve("never"), { key: KEY })).rejects.toThrow(
+      "cost exploded",
+    );
+    expect(p.getState(KEY)!.tokens!.remaining).toBe(100);
   });
 });
 

@@ -1,5 +1,5 @@
 {
-  "name": "OpenAI / tokens only - unit reported for the caller, ignored by the limiter",
+  "name": "OpenAI / tokens only - token dimension is primary and also exposed via tokens",
   "category": "openai",
   "target": "headers",
   "headers": {
@@ -12,7 +12,12 @@
     "remaining": 1999999,
     "reset": "2026-11-11T12:02:33.000Z",
     "windows": [],
-    "unit": "tokens"
+    "unit": "tokens",
+    "tokens": {
+      "limit": 2000000,
+      "remaining": 1999999,
+      "reset": "2026-11-11T12:02:33.000Z"
+    }
   },
   "now": "2026-11-11T12:00:00.000Z"
 }

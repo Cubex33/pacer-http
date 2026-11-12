@@ -1,0 +1,26 @@
+{
+  "name": "Anthropic / combined requests and tokens buckets",
+  "category": "anthropic",
+  "target": "headers",
+  "headers": {
+    "anthropic-ratelimit-requests-limit": "4000",
+    "anthropic-ratelimit-requests-remaining": "3999",
+    "anthropic-ratelimit-requests-reset": "2026-11-11T12:00:10Z",
+    "anthropic-ratelimit-tokens-limit": "400000",
+    "anthropic-ratelimit-tokens-remaining": "399700",
+    "anthropic-ratelimit-tokens-reset": "2026-11-11T12:01:00Z"
+  },
+  "expected": {
+    "limit": 4000,
+    "remaining": 3999,
+    "reset": "2026-11-11T12:00:10.000Z",
+    "windows": [],
+    "unit": "requests",
+    "tokens": {
+      "limit": 400000,
+      "remaining": 399700,
+      "reset": "2026-11-11T12:01:00.000Z"
+    }
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

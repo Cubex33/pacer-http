@@ -1,0 +1,14 @@
+{
+  "name": "OpenAI / garbage request headers make the whole family garbage",
+  "category": "openai",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit-requests": "oops",
+    "x-ratelimit-remaining-requests": "1",
+    "x-ratelimit-limit-tokens": "100000",
+    "x-ratelimit-remaining-tokens": "100",
+    "x-ratelimit-reset-tokens": "5s"
+  },
+  "expected": null,
+  "now": "2026-11-11T12:00:00.000Z"
+}

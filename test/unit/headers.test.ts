@@ -192,6 +192,195 @@ describe("parseRateLimitHeaders family precedence", () => {
   });
 });
 
+describe("parseRateLimitHeaders token dimension", () => {
+  const now = new Date("2026-11-11T12:00:00Z");
+
+  it("parses OpenAI requests and tokens side by side", () => {
+    const state = parseRateLimitHeaders(
+      {
+        "x-ratelimit-limit-requests": "500",
+        "x-ratelimit-remaining-requests": "499",
+        "x-ratelimit-reset-requests": "6s",
+        "x-ratelimit-limit-tokens": "200000",
+        "x-ratelimit-remaining-tokens": "199940",
+        "x-ratelimit-reset-tokens": "5s",
+      },
+      now,
+    );
+    expect(state).toMatchObject({
+      limit: 500,
+      remaining: 499,
+      unit: "requests",
+      tokens: {
+        limit: 200000,
+        remaining: 199940,
+        reset: new Date(now.getTime() + 5_000),
+      },
+    });
+  });
+
+  it("parses Anthropic requests and tokens side by side", () => {
+    const state = parseRateLimitHeaders(
+      {
+        "anthropic-ratelimit-requests-limit": "50",
+        "anthropic-ratelimit-requests-remaining": "49",
+        "anthropic-ratelimit-requests-reset": "2026-11-11T12:00:10Z",
+        "anthropic-ratelimit-tokens-limit": "400000",
+        "anthropic-ratelimit-tokens-remaining": "399700",
+        "anthropic-ratelimit-tokens-reset": "2026-11-11T12:01:00Z",
+      },
+      now,
+    );
+    expect(state).toMatchObject({
+      limit: 50,
+      remaining: 49,
+      unit: "requests",
+      tokens: {
+        limit: 400000,
+        remaining: 399700,
+        reset: new Date("2026-11-11T12:01:00Z"),
+      },
+    });
+  });
+
+  it("reports a tokens-only OpenAI bucket in both the main fields and tokens", () => {
+    const state = parseRateLimitHeaders(
+      {
+        "x-ratelimit-limit-tokens": "2000000",
+        "x-ratelimit-remaining-tokens": "1999999",
+        "x-ratelimit-reset-tokens": "2m33s",
+      },
+      now,
+    );
+    expect(state).toEqual({
+      limit: 2000000,
+      remaining: 1999999,
+      reset: new Date(now.getTime() + 153_000),
+      windows: [],
+      unit: "tokens",
+      tokens: {
+        limit: 2000000,
+        remaining: 1999999,
+        reset: new Date(now.getTime() + 153_000),
+      },
+    });
+  });
+
+  it("maps IETF qu=tokens policies into tokens and keeps requests primary", () => {
+    const state = parseRateLimitHeaders(
+      {
+        ratelimit: '"requests";r=9;t=60,"tokens";r=150000;t=30',
+        "ratelimit-policy": '"requests";q=100;w=60,"tokens";q=200000;w=60;qu="tokens"',
+      },
+      now,
+    );
+    expect(state).toMatchObject({
+      limit: 100,
+      remaining: 9,
+      reset: new Date(now.getTime() + 60_000),
+      windows: [{ limit: 100, windowSec: 60 }],
+      tokens: {
+        limit: 200000,
+        remaining: 150000,
+        reset: new Date(now.getTime() + 30_000),
+      },
+    });
+    expect(state!.unit).toBeUndefined();
+  });
+
+  it("treats a token-only IETF policy as the primary dimension", () => {
+    const state = parseRateLimitHeaders(
+      {
+        ratelimit: '"tokens";r=150000;t=30',
+        "ratelimit-policy": '"tokens";q=200000;w=60;qu="tokens"',
+      },
+      now,
+    );
+    expect(state).toMatchObject({
+      limit: 200000,
+      remaining: 150000,
+      unit: "tokens",
+      windows: [],
+      tokens: { limit: 200000, remaining: 150000 },
+    });
+  });
+
+  it("ignores garbage token headers while valid requests still apply", () => {
+    const state = parseRateLimitHeaders(
+      {
+        "x-ratelimit-limit-requests": "500",
+        "x-ratelimit-remaining-requests": "499",
+        "x-ratelimit-reset-requests": "6s",
+        "x-ratelimit-limit-tokens": "not-a-number",
+        "x-ratelimit-remaining-tokens": "10",
+        "x-ratelimit-reset-tokens": "5s",
+      },
+      now,
+    );
+    expect(state).toMatchObject({ limit: 500, remaining: 499, unit: "requests" });
+    expect(state!.tokens).toBeUndefined();
+  });
+
+  it("returns null when the request dimension is garbage even if tokens are valid", () => {
+    expect(
+      parseRateLimitHeaders(
+        {
+          "x-ratelimit-limit-requests": "oops",
+          "x-ratelimit-remaining-requests": "1",
+          "x-ratelimit-limit-tokens": "100000",
+          "x-ratelimit-remaining-tokens": "100",
+          "x-ratelimit-reset-tokens": "5s",
+        },
+        now,
+      ),
+    ).toBeNull();
+  });
+
+  it("drops an IETF token quota whose remaining exceeds its policy limit", () => {
+    const state = parseRateLimitHeaders(
+      {
+        ratelimit: '"requests";r=9;t=60,"tokens";r=250000;t=30',
+        "ratelimit-policy": '"requests";q=100;w=60,"tokens";q=200000;w=60;qu="tokens"',
+      },
+      now,
+    );
+    expect(state).toMatchObject({ limit: 100, remaining: 9 });
+    expect(state!.tokens).toBeUndefined();
+  });
+
+  it("reports a policy-only token dimension without a current budget", () => {
+    const state = parseRateLimitHeaders(
+      { "ratelimit-policy": '"tokens";q=200000;w=60;qu="tokens"' } satisfies HeadersLike,
+      now,
+    );
+    expect(state).toEqual({
+      limit: 200000,
+      remaining: -1,
+      reset: null,
+      windows: [],
+      unit: "tokens",
+      tokens: { limit: 200000, remaining: -1, reset: null },
+    });
+  });
+
+  it("keeps a policy-only request dimension primary and still reports token policies", () => {
+    const state = parseRateLimitHeaders(
+      {
+        "ratelimit-policy": '"requests";q=100;w=60,"tokens";q=200000;w=60;qu="tokens"',
+      } satisfies HeadersLike,
+      now,
+    );
+    expect(state).toEqual({
+      limit: -1,
+      remaining: -1,
+      reset: null,
+      windows: [{ limit: 100, windowSec: 60 }],
+      unit: undefined,
+      tokens: { limit: 200000, remaining: -1, reset: null },
+    });
+  });
+});
+
 describe("parseRateLimitHeaders reset heuristics", () => {
   const now = new Date("2026-11-11T12:00:00Z");
 

@@ -24,6 +24,17 @@ export interface ScheduleOptions {
    * accepts a signal) so the underlying client can cancel the request.
    */
   signal?: AbortSignal;
+  /**
+   * Request URL used to evaluate a functional `tokenCost` for this call.
+   * `Pacer#fetch` and the adapters fill it in automatically; for
+   * `Pacer#schedule` pass it when `tokenCost` is a function. Default: `""`.
+   */
+  url?: string;
+  /**
+   * Request init passed to a functional `tokenCost`. `Pacer#fetch` and the
+   * adapters fill it in automatically.
+   */
+  init?: RequestInit;
 }
 
 /** A signal that never fires — what `fn` receives when none was provided. */
@@ -91,7 +102,21 @@ export class Pacer {
   async schedule<T>(fn: (signal: AbortSignal) => Promise<T>, opts?: ScheduleOptions): Promise<T> {
     const key = opts?.key ?? "default";
     const signal = opts?.signal;
-    return this.limiter.run(key, () => fn(signal ?? NO_SIGNAL), signal);
+    const tokenCost = this.resolveTokenCost(opts?.url, opts?.init);
+    return this.limiter.run(key, () => fn(signal ?? NO_SIGNAL), signal, tokenCost);
+  }
+
+  /**
+   * Resolves the request's token cost from `tokenCost` (number or function).
+   * Negative, `NaN` and non-finite values collapse to `0` (token pacing
+   * disabled for that request) instead of throwing. A throwing `tokenCost`
+   * function propagates to the caller before any limiter state is touched.
+   */
+  private resolveTokenCost(url: string | undefined, init: RequestInit | undefined): number {
+    const configured = this.opts.tokenCost;
+    if (configured === null) return 0;
+    const raw = typeof configured === "function" ? configured(url ?? "", init) : configured;
+    return Number.isFinite(raw) && raw > 0 ? raw : 0;
   }
 
   /**
@@ -145,7 +170,7 @@ export class Pacer {
     return this.runWithRetry(
       () => fetchFn(input, init),
       (res) => ({ status: res.status, getHeader: (name) => res.headers.get(name) }),
-      { key, signal: init?.signal ?? undefined },
+      { key, signal: init?.signal ?? undefined, url, init },
     );
   }
 
@@ -169,10 +194,13 @@ export class Pacer {
   ): Promise<T> {
     const key = opts?.key ?? "default";
     const signal = opts?.signal;
+    // One cost per call: every retry of the same request costs the same.
+    // A throwing cost function propagates here, before any state is touched.
+    const tokenCost = this.resolveTokenCost(opts?.url, opts?.init);
     let attempts = 0;
     for (;;) {
       attempts++;
-      const res = await this.limiter.run(key, dispatch, signal);
+      const res = await this.limiter.run(key, dispatch, signal, tokenCost);
       const v = view(res);
       this.observeView(key, v);
       if (!this.opts.retryOn.has(v.status)) {

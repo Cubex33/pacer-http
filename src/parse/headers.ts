@@ -1,4 +1,4 @@
-import type { RateLimitState, RateLimitWindow } from "../types.js";
+import type { RateLimitState, RateLimitWindow, TokenQuota } from "../types.js";
 
 /**
  * Anything that can answer "give me header X": a fetch `Headers` instance, a
@@ -480,6 +480,47 @@ function parseDraft7Text(raw: string, nowMs: number): FamilyResult {
   };
 }
 
+interface MergedLimit {
+  remaining: number | null;
+  reset: Date | null;
+  limit: number | null;
+  windowSec: number | null;
+  unit: string | null;
+}
+
+type MergedLimitWithRemaining = MergedLimit & { remaining: number };
+
+function hasRemaining(m: MergedLimit): m is MergedLimitWithRemaining {
+  return m.remaining !== null;
+}
+
+/** `remaining > limit` is the family's garbage signal for one dimension. */
+function exceedsLimit(m: MergedLimitWithRemaining): boolean {
+  return m.limit !== null && m.remaining > m.limit;
+}
+
+/** Most constrained service limit: min remaining; ties → earliest reset. */
+function pickMostConstrained(
+  candidates: MergedLimitWithRemaining[],
+): MergedLimitWithRemaining | null {
+  let best: MergedLimitWithRemaining | null = null;
+  for (const m of candidates) {
+    if (
+      best === null ||
+      m.remaining < best.remaining ||
+      (m.remaining === best.remaining &&
+        (best.reset === null || (m.reset !== null && m.reset < best.reset)))
+    ) {
+      best = m;
+    }
+  }
+  return best;
+}
+
+function quotaOf(m: MergedLimitWithRemaining): TokenQuota {
+  return { limit: m.limit ?? -1, remaining: m.remaining, reset: m.reset };
+}
+
 function parseIetfFamily(get: Getter, nowMs: number): FamilyResult {
   const rateLimitRaw = get("ratelimit");
   const policyRaw = get("ratelimit-policy");
@@ -489,19 +530,49 @@ function parseIetfFamily(get: Getter, nowMs: number): FamilyResult {
   // Policy (informative; malformed policy is ignored, not fatal).
   const policies = policyRaw === null ? [] : (parsePolicies(policyRaw) ?? []);
 
+  // `windows` describes the request dimension only: token policies are a
+  // separate budget and are reported through `tokens`.
   const windows: RateLimitWindow[] = [];
   for (const p of policies) {
-    if (p.limit !== null && p.windowSec !== null && p.windowSec > 0) {
+    if (p.unit !== "tokens" && p.limit !== null && p.windowSec !== null && p.windowSec > 0) {
       windows.push({ limit: p.limit, windowSec: p.windowSec });
     }
   }
+  const tokenPolicies = policies.filter((p) => p.unit === "tokens");
+  const requestPolicies = policies.filter((p) => p.unit !== "tokens");
 
   if (rateLimitRaw === null) {
     // policy-only response: no current quota info, but windows may be useful
     if (policies.length === 0) return NONE;
+    let tokens: TokenQuota | undefined;
+    if (tokenPolicies.length > 0) {
+      const first = tokenPolicies[0]!;
+      tokens = { limit: first.limit ?? -1, remaining: -1, reset: null };
+    }
+    if (requestPolicies.length === 0 && tokens !== undefined) {
+      // Token policies only: the token dimension is the primary one.
+      return {
+        kind: "state",
+        state: {
+          limit: tokens.limit,
+          remaining: -1,
+          reset: null,
+          windows,
+          unit: "tokens",
+          tokens,
+        },
+      };
+    }
     return {
       kind: "state",
-      state: { limit: -1, remaining: -1, reset: null, windows, unit: undefined },
+      state: {
+        limit: -1,
+        remaining: -1,
+        reset: null,
+        windows,
+        unit: undefined,
+        ...(tokens === undefined ? {} : { tokens }),
+      },
     };
   }
 
@@ -515,13 +586,6 @@ function parseIetfFamily(get: Getter, nowMs: number): FamilyResult {
   }
 
   // Merge service limits with policies by identifier.
-  interface MergedLimit {
-    remaining: number;
-    reset: Date | null;
-    limit: number | null;
-    windowSec: number | null;
-    unit: string | null;
-  }
   const consumed = new Set<number>();
   const merged = serviceLimits.map((sl) => {
     let policy: SfPolicy | null = null;
@@ -540,37 +604,52 @@ function parseIetfFamily(get: Getter, nowMs: number): FamilyResult {
       unit: policy?.unit ?? null,
     };
   });
-  const candidates = merged.filter((m): m is MergedLimit => m.remaining !== null);
 
-  // Pick the most constrained service limit (min remaining; ties → earliest reset).
-  let best: MergedLimit | null = null;
-  for (const m of candidates) {
-    if (
-      best === null ||
-      m.remaining < best.remaining ||
-      (m.remaining === best.remaining &&
-        (best.reset === null || (m.reset !== null && m.reset < best.reset)))
-    ) {
-      best = m;
-    }
-  }
+  const requestMerged = merged.filter((m) => m.unit !== "tokens");
+  const tokenMerged = merged.filter((m) => m.unit === "tokens");
+  const tokenWithRemaining = tokenMerged.filter(hasRemaining);
+  const cleanTokens = tokenWithRemaining.filter((m) => !exceedsLimit(m));
+  const bestRequest = pickMostConstrained(requestMerged.filter(hasRemaining));
+  const bestToken = pickMostConstrained(cleanTokens);
+  const tokenQuota = bestToken === null ? undefined : quotaOf(bestToken);
 
-  if (best !== null) {
-    if (best.limit !== null && best.remaining > best.limit) return GARBAGE;
+  if (bestRequest !== null) {
+    // Garbage in the request dimension makes the whole family garbage, as
+    // before. Garbage in the token dimension only drops the token quota.
+    if (exceedsLimit(bestRequest)) return GARBAGE;
     return {
       kind: "state",
       state: {
-        limit: best.limit ?? -1,
-        remaining: best.remaining,
-        reset: best.reset,
+        limit: bestRequest.limit ?? -1,
+        remaining: bestRequest.remaining,
+        reset: bestRequest.reset,
         windows,
-        unit: best.unit ?? undefined,
+        unit: bestRequest.unit ?? undefined,
+        ...(tokenQuota === undefined ? {} : { tokens: tokenQuota }),
       },
     };
   }
 
+  if (tokenQuota !== undefined) {
+    // Token dimension only: it becomes the primary dimension.
+    return {
+      kind: "state",
+      state: {
+        limit: tokenQuota.limit,
+        remaining: tokenQuota.remaining,
+        reset: tokenQuota.reset,
+        windows,
+        unit: "tokens",
+        tokens: tokenQuota,
+      },
+    };
+  }
+
+  // Only garbage token service limits: nothing usable in this family.
+  if (tokenWithRemaining.length > 0 && cleanTokens.length === 0) return GARBAGE;
+
   // Service limits without any `r` parameter: only window/reset info.
-  const withReset = merged.find((m) => m.reset !== null);
+  const withReset = requestMerged.find((m) => m.reset !== null);
   return {
     kind: "state",
     state: {
@@ -597,30 +676,99 @@ function parseGitLabFamily(get: Getter, nowMs: number): FamilyResult {
   return b.build();
 }
 
+/** A family that advertises separate request and token dimensions. */
+interface UnitHeaderNames {
+  limit: string;
+  remaining: string;
+  reset: string;
+}
+
+function buildUnitFamily(
+  get: Getter,
+  nowMs: number,
+  unit: "requests" | "tokens",
+  names: (unit: "requests" | "tokens") => UnitHeaderNames,
+  resetMode: "duration" | "date",
+): FamilyResult {
+  const n = names(unit);
+  const b = new FamilyBuilder(nowMs, unit);
+  b.setLimit(get, n.limit);
+  b.setRemaining(get, n.remaining);
+  b.setReset(get, n.reset, resetMode);
+  return b.build();
+}
+
+function quotaFromState(state: RateLimitState): TokenQuota {
+  return { limit: state.limit, remaining: state.remaining, reset: state.reset };
+}
+
+/**
+ * Combines the two dimensions of an OpenAI/Anthropic-style family.
+ *
+ * Garbage policy (deterministic, documented): garbage in the request
+ * dimension makes the whole family garbage (unchanged behaviour); garbage in
+ * the token dimension only drops the token quota and keeps the request
+ * state. When requests are absent and tokens are usable, tokens become the
+ * primary dimension (`unit: "tokens"`) and are also exposed via `tokens`.
+ */
+function combineDualUnit(requests: FamilyResult, tokens: FamilyResult): FamilyResult {
+  if (requests.kind === "garbage") return GARBAGE;
+  if (requests.kind === "state") {
+    if (tokens.kind === "state") {
+      return {
+        kind: "state",
+        state: { ...requests.state, tokens: quotaFromState(tokens.state) },
+      };
+    }
+    return requests;
+  }
+  if (tokens.kind === "state") {
+    return {
+      kind: "state",
+      state: { ...tokens.state, tokens: quotaFromState(tokens.state) },
+    };
+  }
+  return tokens.kind === "garbage" ? GARBAGE : NONE;
+}
+
+function parseDualUnitFamily(
+  get: Getter,
+  nowMs: number,
+  names: (unit: "requests" | "tokens") => UnitHeaderNames,
+  resetMode: "duration" | "date",
+): FamilyResult {
+  return combineDualUnit(
+    buildUnitFamily(get, nowMs, "requests", names, resetMode),
+    buildUnitFamily(get, nowMs, "tokens", names, resetMode),
+  );
+}
+
 /** OpenAI: x-ratelimit-{requests,tokens}-{limit,remaining,reset} (reset is a duration string). */
 function parseOpenAiFamily(get: Getter, nowMs: number): FamilyResult {
-  for (const unit of ["requests", "tokens"] as const) {
-    const b = new FamilyBuilder(nowMs, unit);
-    b.setLimit(get, `x-ratelimit-limit-${unit}`);
-    b.setRemaining(get, `x-ratelimit-remaining-${unit}`);
-    b.setReset(get, `x-ratelimit-reset-${unit}`, "duration");
-    const result = b.build();
-    if (result.kind !== "none") return result;
-  }
-  return NONE;
+  return parseDualUnitFamily(
+    get,
+    nowMs,
+    (unit) => ({
+      limit: `x-ratelimit-limit-${unit}`,
+      remaining: `x-ratelimit-remaining-${unit}`,
+      reset: `x-ratelimit-reset-${unit}`,
+    }),
+    "duration",
+  );
 }
 
 /** Anthropic: anthropic-ratelimit-{requests,tokens}-{limit,remaining,reset} (reset is RFC 3339). */
 function parseAnthropicFamily(get: Getter, nowMs: number): FamilyResult {
-  for (const unit of ["requests", "tokens"] as const) {
-    const b = new FamilyBuilder(nowMs, unit);
-    b.setLimit(get, `anthropic-ratelimit-${unit}-limit`);
-    b.setRemaining(get, `anthropic-ratelimit-${unit}-remaining`);
-    b.setReset(get, `anthropic-ratelimit-${unit}-reset`, "date");
-    const result = b.build();
-    if (result.kind !== "none") return result;
-  }
-  return NONE;
+  return parseDualUnitFamily(
+    get,
+    nowMs,
+    (unit) => ({
+      limit: `anthropic-ratelimit-${unit}-limit`,
+      remaining: `anthropic-ratelimit-${unit}-remaining`,
+      reset: `anthropic-ratelimit-${unit}-reset`,
+    }),
+    "date",
+  );
 }
 
 /** GitHub / Discord / Square / …: x-ratelimit-{limit,remaining,reset[,reset-after]}. */

@@ -1,6 +1,6 @@
 {
   "name": "pacer-http",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Adaptive client-side rate limiter: wraps any fetch and paces requests from RateLimit / X-RateLimit-* / Retry-After response headers.",
   "type": "module",
   "license": "MIT",

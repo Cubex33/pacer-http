@@ -17,6 +17,11 @@ interface HeadersFixture {
     reset: string | null;
     windows?: Array<{ limit: number; windowSec: number }>;
     unit?: string;
+    tokens?: {
+      limit: number;
+      remaining: number;
+      reset: string | null;
+    };
   };
 }
 
@@ -87,6 +92,16 @@ describe("golden fixture set", () => {
         expect(state!.unit).toBeUndefined();
       } else {
         expect(state!.unit).toBe(expected.unit);
+      }
+      if (expected.tokens === undefined) {
+        expect(state!.tokens).toBeUndefined();
+      } else {
+        expect(state!.tokens).toBeDefined();
+        expect(state!.tokens!.limit).toBe(expected.tokens.limit);
+        expect(state!.tokens!.remaining).toBe(expected.tokens.remaining);
+        expect(state!.tokens!.reset === null ? null : state!.tokens!.reset.toISOString()).toBe(
+          expected.tokens.reset,
+        );
       }
     });
   }

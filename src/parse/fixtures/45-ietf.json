@@ -1,0 +1,26 @@
+{
+  "name": "IETF draft-11 / request and token policies with qu=\"tokens\"",
+  "category": "ietf",
+  "target": "headers",
+  "headers": {
+    "ratelimit": "\"requests\";r=9;t=60,\"tokens\";r=150000;t=30",
+    "ratelimit-policy": "\"requests\";q=100;w=60,\"tokens\";q=200000;w=60;qu=\"tokens\""
+  },
+  "expected": {
+    "limit": 100,
+    "remaining": 9,
+    "reset": "2026-11-11T12:01:00.000Z",
+    "windows": [
+      {
+        "limit": 100,
+        "windowSec": 60
+      }
+    ],
+    "tokens": {
+      "limit": 200000,
+      "remaining": 150000,
+      "reset": "2026-11-11T12:00:30.000Z"
+    }
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

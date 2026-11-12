@@ -1,0 +1,21 @@
+{
+  "name": "IETF draft-11 / token remaining above its policy limit is ignored, requests still apply",
+  "category": "ietf",
+  "target": "headers",
+  "headers": {
+    "ratelimit": "\"requests\";r=9;t=60,\"tokens\";r=250000;t=30",
+    "ratelimit-policy": "\"requests\";q=100;w=60,\"tokens\";q=200000;w=60;qu=\"tokens\""
+  },
+  "expected": {
+    "limit": 100,
+    "remaining": 9,
+    "reset": "2026-11-11T12:01:00.000Z",
+    "windows": [
+      {
+        "limit": 100,
+        "windowSec": 60
+      }
+    ]
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

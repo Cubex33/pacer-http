@@ -11,17 +11,40 @@ export interface RateLimitWindow {
 }
 
 /**
+ * One token-bucket snapshot (LLM APIs: OpenAI / Anthropic TPM quotas).
+ * `limit` and `remaining` are `-1` when the server does not report them;
+ * `reset` is the absolute point in time when the token budget is restored,
+ * or `null` when unknown.
+ */
+export interface TokenQuota {
+  /** Token quota allocated for the window, `-1` when the server does not report it. */
+  limit: number;
+  /** Tokens left in the window, `-1` when the server does not report it. */
+  remaining: number;
+  /** Absolute point in time when the token budget is restored, or `null`. */
+  reset: Date | null;
+}
+
+/**
  * Normalized rate-limit information parsed from a response's headers.
  *
- * - `limit` / `remaining` are `-1` when the server does not report them.
- * - `reset` is the absolute point in time when the quota is expected to be
- *   restored, or `null` when unknown.
+ * - `limit` / `remaining` / `reset` describe the **request** dimension (the
+ *   quota unit is reported separately in `unit`). `limit` and `remaining`
+ *   are `-1` when the server does not report them, `reset` is `null` when
+ *   unknown.
  * - `windows` is populated for IETF `RateLimit-Policy` fields (possibly
- *  multiple windows, e.g. `"burst";q=10;w=1,"daily";q=1000;w=86400`) and is
- *  empty for legacy `X-RateLimit-*` headers.
+ *   multiple windows, e.g. `"burst";q=10;w=1,"daily";q=1000;w=86400`) and is
+ *   empty for legacy `X-RateLimit-*` headers. Token policies are reported in
+ *   `tokens` and are not mixed into `windows`.
  * - `unit` is the quota unit when the server reports one (e.g. `"requests"`,
- *  `"tokens"`, `"content-bytes"`). The limiter only paces `requests` states
- *  and ignores other units (token quota is out of scope, see README).
+ *   `"tokens"`, `"content-bytes"`). The limiter paces `requests` states
+ *   (default when `unit` is absent), `tokens` states via the `tokens` field,
+ *   and reports other units without pacing them.
+ * - `tokens` carries the token dimension when the response advertises one
+ *   (OpenAI/Anthropic `*-tokens-*` headers, IETF policies with
+ *   `qu="tokens"`). It is present next to the request dimension when the
+ *   server reports both, and also when tokens are the only dimension
+ *   reported (`unit: "tokens"` in that case).
  */
 export interface RateLimitState {
   limit: number;
@@ -29,6 +52,7 @@ export interface RateLimitState {
   reset: Date | null;
   windows: RateLimitWindow[];
   unit?: string;
+  tokens?: TokenQuota;
 }
 
 /** Jitter mode for waits (see README › Options › jitter). */
@@ -104,6 +128,25 @@ export interface PacerOptions {
    * Default: `(s) => s.remaining <= 1` — stop before consuming the last slot.
    */
   shouldPause?: (s: RateLimitState) => boolean;
+  /**
+   * Estimated token cost of one request, used to pace the token dimension
+   * (LLM TPM quotas) in addition to requests. A number applies to every
+   * request; a function receives the request URL and init and may estimate
+   * from the payload (e.g. `promptTokens + maxTokens`). Negative, `NaN` and
+   * non-finite results are treated as `0`. When omitted, the token
+   * dimension is never paced (full backwards compatibility). Exceptions
+   * thrown by the function propagate to the caller before any limiter state
+   * is touched, exactly like `key`'s.
+   */
+  tokenCost?: number | ((url: string, init?: RequestInit) => number);
+  /**
+   * Decides whether the next request should proactively pause until the
+   * token reset instead of being dispatched. Receives the effective token
+   * snapshot: `remaining` reduced by token cost reserved for in-flight
+   * requests. Default: `(q) => q.remaining <= 0` (pause once the token
+   * budget is spent). Only consulted when `tokenCost` is configured.
+   */
+  shouldPauseTokens?: (q: TokenQuota) => boolean;
   /**
    * Metrics hook: called on every observed response with the parsed state
    * for the key, or `null` when the response carried no usable rate-limit

@@ -12,7 +12,12 @@
     "remaining": 499999,
     "reset": "2026-11-11T12:00:30.000Z",
     "windows": [],
-    "unit": "tokens"
+    "unit": "tokens",
+    "tokens": {
+      "limit": 500000,
+      "remaining": 499999,
+      "reset": "2026-11-11T12:00:30.000Z"
+    }
   },
   "now": "2026-11-11T12:00:00.000Z"
 }

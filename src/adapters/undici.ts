@@ -65,6 +65,8 @@ export function wrapUndici(requestFn: typeof request, opts: PacerOptions = {}): 
       {
         key: keyFn(typeof url === "string" ? url : url.href, options as RequestInit),
         signal: options?.signal instanceof AbortSignal ? options.signal : undefined,
+        url: typeof url === "string" ? url : url.href,
+        init: options as RequestInit,
       },
     );
   return paced;

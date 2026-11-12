@@ -129,6 +129,9 @@ export function wrapAxios(axiosInstance: AxiosInstance, opts: PacerOptions = {})
       // axios accepts AbortController signals (typed as its own
       // GenericAbortSignal shape); users pass real AbortSignals.
       signal: config.signal as AbortSignal | undefined,
+      // Used to evaluate a functional `tokenCost` (same URL/init as `key`).
+      url,
+      init: config as RequestInit,
     });
   }
 

@@ -9,4 +9,5 @@ export type {
   RateLimitState,
   RateLimitWindow,
   RetryInfo,
+  TokenQuota,
 } from "./types.js";

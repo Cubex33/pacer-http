@@ -1,0 +1,21 @@
+{
+  "name": "OpenAI / garbage token headers do not spoil a valid request bucket",
+  "category": "openai",
+  "target": "headers",
+  "headers": {
+    "x-ratelimit-limit-requests": "500",
+    "x-ratelimit-remaining-requests": "499",
+    "x-ratelimit-reset-requests": "6s",
+    "x-ratelimit-limit-tokens": "not-a-number",
+    "x-ratelimit-remaining-tokens": "10",
+    "x-ratelimit-reset-tokens": "5s"
+  },
+  "expected": {
+    "limit": 500,
+    "remaining": 499,
+    "reset": "2026-11-11T12:00:06.000Z",
+    "windows": [],
+    "unit": "requests"
+  },
+  "now": "2026-11-11T12:00:00.000Z"
+}

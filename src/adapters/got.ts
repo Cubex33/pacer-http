@@ -114,6 +114,8 @@ export function wrapGot(gotFn: GotFn, opts: PacerOptions = {}): PacedGot {
     return engine.runWithRetry(dispatch, view, {
       key: keyFn(typeof url === "string" ? url : url.href, options as RequestInit),
       signal: options?.signal ?? undefined,
+      url: typeof url === "string" ? url : url.href,
+      init: options as RequestInit,
     });
   };
   return paced as PacedGot;

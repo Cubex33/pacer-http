@@ -1,5 +1,5 @@
 {
-  "name": "OpenAI / requests and tokens both present — requests wins",
+  "name": "OpenAI / requests and tokens both present — requests is primary, tokens reported separately",
   "category": "openai",
   "target": "headers",
   "headers": {
@@ -15,7 +15,12 @@
     "remaining": 499,
     "reset": "2026-11-11T12:00:06.000Z",
     "windows": [],
-    "unit": "requests"
+    "unit": "requests",
+    "tokens": {
+      "limit": 200000,
+      "remaining": 199940,
+      "reset": "2026-11-11T12:00:05.000Z"
+    }
   },
   "now": "2026-11-11T12:00:00.000Z"
 }
