@@ -25,6 +25,11 @@ jobs:
       - run: npm run typecheck
       - run: npm run test:coverage
       - run: npm run build
+      - name: verify the undici adapter against undici 8
+        if: matrix.node == 22
+        run: |
+          npm install --no-save --no-package-lock undici@8
+          npx vitest run test/integration/adapters.test.ts test/unit/adapter-types.test.ts
       - name: verify the demo against the built package
         run: node examples/github-pagination.mjs
       - uses: actions/upload-artifact@v4

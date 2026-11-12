@@ -3,6 +3,22 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.1] — 2026-11-12
+
+### Fixed
+
+- CI failed on Node 20: the `undici` dev dependency was 8.x, which requires
+  Node 22.19+ and crashes at import time on Node 20 (`zlib` has no zstd
+  bindings there). Development and CI now pin undici 6, and a Node 22 job
+  additionally verifies the adapter against undici 8.
+- `peerDependencies.undici` is now `>=6` (was `>=5`): the adapter is typed
+  against undici 6+ and 5.x is not tested.
+
+### Changed
+
+- README: note that undici 7+ needs Node 22.19+, so Node 20 users should
+  install `undici@6`.
+
 ## [0.3.0] — 2026-11-11
 
 ### Added

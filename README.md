@@ -148,6 +148,8 @@ console.log(await body.json());
 
 Bodies of responses dropped for a retry are dumped automatically, so the connection can be reused. If you use undici's fetch-shaped API, the plain wrapper works without an adapter: `pacer(undici.fetch)`.
 
+> **undici version vs Node version.** `pacer-http/undici` supports undici 6 and newer. undici 7+ requires Node 22.19+ (it imports `zlib` zstd APIs at load time), so on Node 20 install undici 6: `npm install undici@6`.
+
 ## Token quotas (LLM APIs)
 
 OpenAI- and Anthropic-style APIs limit both **requests** and **tokens** per minute. When a response advertises a token dimension (`x-ratelimit-*-tokens`, `anthropic-ratelimit-tokens-*`, or an IETF policy with `qu="tokens"`), the pacer tracks it as a second, independent budget — request pacing is never affected by token observations and vice versa.
