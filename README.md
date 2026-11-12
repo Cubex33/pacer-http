@@ -1,6 +1,7 @@
 # pacer-http
 
 [![CI](https://github.com/Cubex33/pacer-http/actions/workflows/ci.yml/badge.svg)](https://github.com/Cubex33/pacer-http/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/pacer-http.svg)](https://www.npmjs.com/package/pacer-http)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/Cubex33/pacer-http/blob/main/LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
 
